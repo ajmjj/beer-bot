@@ -5,7 +5,10 @@
 // Invisible marks WhatsApp sprinkles in: LTR/RTL marks, BOM, bidi embeddings/isolates.
 const INVISIBLE = /[‎‏﻿‪-‮⁦-⁩]/g;
 const ATTACHMENT = /<attached:[^>]*>/gi;
-const NOISE = /image omitted|<This message was edited>/gi;
+// WhatsApp media placeholders: "image/video/audio/GIF/sticker/document/Contact card omitted".
+// Match one or two leading letter-words + "omitted" so we strip the placeholder but never
+// the numeric caption (e.g. "67 video omitted" -> "67"). Digits can't precede "omitted" here.
+const NOISE = /\b[A-Za-z]+(?: [A-Za-z]+)? omitted|<This message was edited>|This message was deleted/gi;
 
 // Strip invisible Unicode and attachment/edit markers, then trim.
 export function cleanText(text) {
@@ -50,6 +53,9 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   assert.equal(parseBeer("Mit 28 members brauchen wir 100jahre"), null); // sentence with digits
   assert.equal(parseBeer("‎<attached: x.jpg>"), null); // photo only
   assert.equal(parseBeer(""), null);
+  assert.equal(parseBeer("67 ‎video omitted"), 67); // numbered video
+  assert.equal(parseBeer("43 GIF omitted"), 43); // numbered GIF
+  assert.equal(parseBeer("‎video omitted"), null); // media only, no number
 
   const row = parseExportLine("‎[20/06/2026, 4:19:50 PM] stein: 6 ‎<attached: x.jpg>");
   assert.equal(row.member, "stein");
