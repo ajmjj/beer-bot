@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Live WhatsApp beer tracking for the OMB DACH group (Baileys -> Supabase)",
+  "description": "Live WhatsApp beer tracking for the OMB group (Baileys -> Supabase)",
   "engines": {
     "node": ">=22"
   },
