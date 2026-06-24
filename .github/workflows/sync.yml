@@ -1,0 +1,48 @@
+name: Daily Beer Sync
+
+on:
+  schedule:
+    - cron: '0 6 * * *'   # 6am UTC (8am CEST) every day
+  workflow_dispatch:        # allows manual trigger from GitHub UI
+    inputs:
+      backfill:
+        description: 'Mark rows as backfilled (use when recovering from downtime)'
+        required: false
+        default: 'false'
+        type: boolean
+      dry_run:
+        description: 'Dry run — parse only, no sheet writes'
+        required: false
+        default: 'false'
+        type: boolean
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run sync
+        env:
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          SHEET_ID: ${{ secrets.SHEET_ID }}
+        run: |
+          FLAGS=""
+          if [ "${{ github.event.inputs.backfill }}" = "true" ]; then
+            FLAGS="$FLAGS --backfill"
+          fi
+          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
+            FLAGS="$FLAGS --dry-run"
+          fi
+          node src/sync.js --file=_chat.txt $FLAGS

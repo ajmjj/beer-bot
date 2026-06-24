@@ -1,0 +1,13 @@
+node_modules/
+credentials.json
+.env
+*.json.bak
+
+# WhatsApp exports — never commit; upload via workflow_dispatch only
+chat_exports/*
+
+# Local files
+.locals/*
+
+# Local planning notes — keep out of the repo
+.claude/
