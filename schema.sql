@@ -95,9 +95,9 @@ create or replace view v_hourly_matrix as
 -- monthly breakdown with rank
 create or replace view v_monthly as
   with m as (
-    select date_trunc('month', (ts at time zone 'Europe/Berlin'))::date month,
+    select date_trunc('month', (ts at time zone 'Europe/Berlin'))::date as month,
            count(*) c,
-           count(distinct (ts at time zone 'Europe/Berlin')::date) days
+           count(distinct (ts at time zone 'Europe/Berlin')::date) as days
     from beers where deleted_at is null group by 1
   )
   select month, c::int as total, days::int,
@@ -166,8 +166,8 @@ create or replace view v_forecast as
     from c where beer_date >= (select max(beer_date) from c) - 30
   )
   select f.current_total::int,
-         round(f.slope, 1) as linear_rate_per_day,
-         round(t.rate30, 1) as trailing_rate_per_day,
+         round(f.slope::numeric, 1) as linear_rate_per_day,
+         round(t.rate30::numeric, 1) as trailing_rate_per_day,
          to_timestamp(((100000  - f.intercept) / nullif(f.slope, 0)) * 86400)::date as linear_100k_date,
          to_timestamp(((500000  - f.intercept) / nullif(f.slope, 0)) * 86400)::date as linear_500k_date,
          to_timestamp(((1000000 - f.intercept) / nullif(f.slope, 0)) * 86400)::date as linear_1m_date,
