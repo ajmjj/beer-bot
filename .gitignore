@@ -3,6 +3,9 @@ credentials.json
 .env
 *.json.bak
 
+# Baileys WhatsApp session — a live credential, never commit
+.baileys_auth/
+
 # WhatsApp exports — never commit; upload via workflow_dispatch only
 chat_exports/*
 
