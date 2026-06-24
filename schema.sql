@@ -24,3 +24,6 @@ create view daily_counts as
 
 alter table beers enable row level security;
 create policy "public read" on beers for select using (true);
+
+-- Let the publishable (anon) key read the aggregate views from the frontend.
+grant select on totals, leaderboard_alltime, daily_counts to anon, authenticated;

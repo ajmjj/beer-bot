@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>🍺 One Million Beers</title>
+  <style>
+    :root { --bg:#15110b; --card:#211a10; --amber:#f5a623; --foam:#ffe9c2; --muted:#9a8c73; --line:#3a2f1e; }
+    * { box-sizing: border-box; }
+    body { margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+           background:var(--bg); color:var(--foam); padding:24px; }
+    .wrap { max-width:860px; margin:0 auto; }
+    h1 { font-size:14px; letter-spacing:.18em; text-transform:uppercase; color:var(--muted); font-weight:600; }
+    .hero { text-align:center; padding:24px 0 12px; }
+    .count { font-size:clamp(48px,12vw,96px); font-weight:800; color:var(--amber); line-height:1; }
+    .goal { color:var(--muted); margin-top:6px; }
+    .bar { height:10px; background:var(--line); border-radius:6px; overflow:hidden; margin:16px 0 4px; }
+    .bar > div { height:100%; background:var(--amber); width:0; transition:width 1s ease; }
+    .pct { color:var(--muted); font-size:13px; }
+    .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:12px; margin:24px 0; }
+    .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:16px; }
+    .card .v { font-size:28px; font-weight:700; }
+    .card .l { color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:.08em; margin-top:4px; }
+    section { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:18px; margin-bottom:20px; }
+    section h2 { font-size:13px; text-transform:uppercase; letter-spacing:.1em; color:var(--muted); margin:0 0 14px; }
+    table { width:100%; border-collapse:collapse; }
+    td { padding:7px 4px; border-bottom:1px solid var(--line); }
+    tr:last-child td { border-bottom:none; }
+    .rank { color:var(--muted); width:32px; }
+    .beers { text-align:right; font-weight:700; color:var(--amber); }
+    button { background:none; border:1px solid var(--line); color:var(--muted); padding:6px 12px;
+             border-radius:8px; cursor:pointer; font-size:12px; margin-top:12px; }
+    button:hover { color:var(--foam); border-color:var(--amber); }
+    .trend { display:flex; align-items:flex-end; gap:3px; height:120px; }
+    .trend .b { flex:1; background:var(--amber); border-radius:2px 2px 0 0; min-height:2px; opacity:.85; }
+    .trend .b:hover { opacity:1; }
+    .err { color:#ff8c8c; }
+    .foot { color:var(--muted); font-size:12px; text-align:center; margin-top:24px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>One Million Beers · DACH</h1>
+
+    <div class="hero">
+      <div class="count" id="total">–</div>
+      <div class="goal">of 1,000,000</div>
+      <div class="bar"><div id="bar"></div></div>
+      <div class="pct" id="pct"></div>
+    </div>
+
+    <div class="cards">
+      <div class="card"><div class="v" id="members">–</div><div class="l">Members</div></div>
+      <div class="card"><div class="v" id="days">–</div><div class="l">Active days</div></div>
+      <div class="card"><div class="v" id="avg">–</div><div class="l">Avg / day</div></div>
+      <div class="card"><div class="v" id="week">–</div><div class="l">Last 7 days</div></div>
+    </div>
+
+    <section>
+      <h2>Leaderboard</h2>
+      <table><tbody id="board"></tbody></table>
+      <button id="toggle" hidden>Show all</button>
+    </section>
+
+    <section>
+      <h2>Daily trend</h2>
+      <div class="trend" id="trend"></div>
+    </section>
+
+    <div class="foot" id="foot"></div>
+  </div>
+
+  <script src="config.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
