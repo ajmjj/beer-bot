@@ -181,3 +181,25 @@ function show(name) {
 document.querySelectorAll("nav button").forEach((b) => (b.onclick = () => show(b.dataset.tab)));
 show("overview");
 $("foot").textContent = `Updated ${new Date().toLocaleString()}`;
+
+async function registerName() {
+  const phone = $("reg-phone").value.trim();
+  const name  = $("reg-name").value.trim();
+  const status = $("reg-status");
+  if (!phone || !name) { status.innerHTML = `<span class="err">Enter both a phone number and a display name.</span>`; return; }
+  status.style.color = "var(--muted)";
+  status.textContent = "Saving…";
+  try {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/rpc/register_display_name`, {
+      method: "POST",
+      headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ phone, name }),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    const n = await res.json();
+    status.style.color = "var(--amber)";
+    status.textContent = n > 0 ? `Done — updated ${n} beer${n === 1 ? "" : "s"}.` : "Saved. No existing beers matched (future posts will use this name).";
+  } catch (e) {
+    status.innerHTML = `<span class="err">${esc(e.message)}</span>`;
+  }
+}

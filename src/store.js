@@ -1,5 +1,6 @@
 // Supabase writer. Used by both the live bot and the backfill importer.
 import { createClient } from "@supabase/supabase-js";
+import { maskPhone } from "./parser.js";
 
 const { SUPABASE_URL, SUPABASE_SECRET_KEY } = process.env;
 if (!SUPABASE_URL || !SUPABASE_SECRET_KEY) {
@@ -17,7 +18,7 @@ export async function insertBeers(entries) {
   if (!entries.length) return 0;
   const rows = entries.map((e) => ({
     beer_number: e.beer_number,
-    member: e.member,
+    member: maskPhone(e.member),
     push_name: e.push_name ?? null, // null for backfill/manual; set on live
     participant: e.participant ?? null,
     ts: e.ts instanceof Date ? e.ts.toISOString() : e.ts,

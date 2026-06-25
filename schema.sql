@@ -199,3 +199,56 @@ grant select on
   v_leaderboard_active, v_biggest_day, v_highest_week, v_milestones,
   v_forecast, v_admin_deletes, v_participation
   to anon, authenticated;
+
+-- =========================================================================
+-- PHONE PRIVACY  (re-runnable)
+-- =========================================================================
+
+-- Mask middle digits of phone-number-like strings; display names pass through.
+create or replace function mask_phone(m text) returns text language plpgsql immutable as $$
+declare
+  digits text := regexp_replace(m, '[^0-9]', '', 'g');
+  mid    int;
+begin
+  if m ~ '[a-zA-Z~]' or length(digits) < 8 then return m; end if;
+  mid := length(digits) - 8;
+  return case when left(m, 1) = '+' then '+' else '' end
+    || left(digits, 4) || repeat('x', mid) || right(digits, 4);
+end;
+$$;
+
+-- One-time migration: mask any phone numbers already stored in member.
+-- Safe to re-run: mask_phone is idempotent on already-masked values.
+update beers set member = mask_phone(member) where member != mask_phone(member);
+
+-- Self-service display name registration.
+create table if not exists member_names (
+  participant  text primary key,
+  display_name text not null,
+  updated_at   timestamptz default now()
+);
+alter table member_names enable row level security;
+create policy "public read"   on member_names for select using (true);
+create policy "public insert" on member_names for insert with check (true);
+create policy "public update" on member_names for update using (true);
+grant select, insert, update on member_names to anon, authenticated;
+
+-- RPC: normalise phone, upsert into member_names, update beers.member in place.
+-- security definer so it can update beers despite anon read-only RLS.
+-- Returns number of beer rows updated.
+create or replace function register_display_name(phone text, name text)
+returns int language plpgsql security definer as $$
+declare
+  norm text := regexp_replace(phone, '[^0-9]', '', 'g');
+  n    int;
+begin
+  insert into member_names(participant, display_name)
+  values (norm, name)
+  on conflict (participant) do update set display_name = name, updated_at = now();
+
+  update beers set member = name where participant = norm;
+  get diagnostics n = row_count;
+  return n;
+end;
+$$;
+grant execute on function register_display_name to anon, authenticated;
