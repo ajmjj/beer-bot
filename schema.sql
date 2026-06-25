@@ -315,7 +315,8 @@ create or replace view v_members as
 
 grant select on v_member_stats, v_members to anon, authenticated;
 
--- Update RPC to write member name into members table instead of member_names.
+-- Update RPC: sets member name in both members and beers so they stay in sync.
+-- Returns 1 if the phone matched a known group member, 0 if not found.
 create or replace function register_display_name(phone text, name text)
 returns int language plpgsql security definer as $$
 declare
@@ -323,8 +324,8 @@ declare
   n    int;
 begin
   update members set member = name where participant = norm;
-  update beers   set member = name where participant = norm;
   get diagnostics n = row_count;
+  update beers set member = name where participant = norm;
   return n;
 end;
 $$;
