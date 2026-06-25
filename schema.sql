@@ -32,11 +32,21 @@ create policy "public read" on beers for select using (true);
 -- =========================================================================
 
 create or replace view totals as
-  select count(*) total_beers, count(distinct member) members, count(distinct beer_date) active_days
+  select count(*) total_beers,
+         (select count(*) from members) as members,
+         count(distinct beer_date) active_days
   from beers where deleted_at is null;
 
+-- Resolve member display name: prefer members.member (registered or auto-set from push_name)
+-- over beers.member (snapshot at post time). Falls back to beers.member for backfill rows
+-- where participant is null or the member is no longer in the group.
 create or replace view leaderboard_alltime as
-  select member, count(*) beers from beers where deleted_at is null group by member order by beers desc;
+  select coalesce(m.member, b.member) as member, count(*)::int as beers
+  from beers b
+  left join members m on m.participant = b.participant
+  where b.deleted_at is null
+  group by coalesce(m.member, b.member)
+  order by beers desc;
 
 create or replace view daily_counts as
   select beer_date, count(*) beers from beers where deleted_at is null group by beer_date order by beer_date;
@@ -117,23 +127,38 @@ create or replace view v_weekly as
 
 -- beers-per-active-day leaderboard
 create or replace view v_leaderboard_active as
-  select member, count(*)::int as beers,
-         count(distinct beer_date)::int as active_days,
-         round(count(*)::numeric / nullif(count(distinct beer_date), 0), 2) as per_active_day
-  from beers where deleted_at is null
-  group by member order by per_active_day desc;
+  select coalesce(m.member, b.member) as member,
+         count(*)::int as beers,
+         count(distinct b.beer_date)::int as active_days,
+         round(count(*)::numeric / nullif(count(distinct b.beer_date), 0), 2) as per_active_day
+  from beers b
+  left join members m on m.participant = b.participant
+  where b.deleted_at is null
+  group by coalesce(m.member, b.member)
+  order by per_active_day desc;
 
 -- biggest single day per person
 create or replace view v_biggest_day as
-  with d as (select member, beer_date, count(*) c from beers where deleted_at is null group by member, beer_date)
+  with d as (
+    select coalesce(m.member, b.member) as member, b.beer_date, count(*) c
+    from beers b
+    left join members m on m.participant = b.participant
+    where b.deleted_at is null
+    group by coalesce(m.member, b.member), b.beer_date
+  )
   select distinct on (member) member, c::int as biggest_day, beer_date as date
   from d order by member, c desc, beer_date;
 
 -- best single week per person (sort desc in the frontend for the board)
 create or replace view v_highest_week as
   with w as (
-    select member, date_trunc('week', (ts at time zone 'Europe/Berlin'))::date wk, count(*) c
-    from beers where deleted_at is null group by member, wk
+    select coalesce(m.member, b.member) as member,
+           date_trunc('week', (b.ts at time zone 'Europe/Berlin'))::date wk,
+           count(*) c
+    from beers b
+    left join members m on m.participant = b.participant
+    where b.deleted_at is null
+    group by coalesce(m.member, b.member), wk
   )
   select distinct on (member) member, wk as week_start, c::int as beers
   from w order by member, c desc, wk;
@@ -267,6 +292,7 @@ create table if not exists members (
   synced_at    timestamptz default now()
 );
 alter table members enable row level security;
+drop policy if exists "public read" on members;
 create policy "public read" on members for select using (true);
 grant select on members to anon, authenticated;
 
@@ -275,9 +301,7 @@ alter table members add column if not exists phone     text;
 alter table members add column if not exists member    text;
 alter table members add column if not exists push_name text;
 
--- Migrate display names from member_names into members, then drop member_names.
-update members m set member = mn.display_name
-  from member_names mn where mn.participant = m.participant;
+-- Populate phone from participant (idempotent).
 update members set phone = participant where phone is null;
 update members m set push_name = (
   select b.push_name from beers b
@@ -285,6 +309,24 @@ update members m set push_name = (
   order by b.ts desc limit 1
 ) where push_name is null;
 drop table if exists member_names cascade;
+
+-- Trigger: auto-set member = push_name (or masked phone) whenever it would be null.
+-- User-registered names (non-null member) are never overwritten by this.
+create or replace function members_default_name() returns trigger language plpgsql as $$
+begin
+  if new.member is null then
+    new.member := coalesce(new.push_name, mask_phone(new.participant));
+  end if;
+  return new;
+end;
+$$;
+drop trigger if exists members_default_name_trigger on members;
+create trigger members_default_name_trigger
+  before insert or update on members
+  for each row execute function members_default_name();
+
+-- Backfill member for any existing rows that are still null.
+update members set member = coalesce(push_name, mask_phone(participant)) where member is null;
 
 -- Group-wide stats that require knowing total membership (not just posters).
 create or replace view v_member_stats as
@@ -314,7 +356,8 @@ create or replace view v_members as
 
 grant select on v_member_stats, v_members to anon, authenticated;
 
--- Update RPC to write member name into members table instead of member_names.
+-- Update RPC: sets member name in both members and beers so they stay in sync.
+-- Returns 1 if the phone matched a known group member, 0 if not found.
 create or replace function register_display_name(phone text, name text)
 returns int language plpgsql security definer as $$
 declare
@@ -322,8 +365,8 @@ declare
   n    int;
 begin
   update members set member = name where participant = norm;
-  update beers   set member = name where participant = norm;
   get diagnostics n = row_count;
+  update beers set member = name where participant = norm;
   return n;
 end;
 $$;

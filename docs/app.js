@@ -217,7 +217,7 @@ async function registerName() {
     if (!res.ok) throw new Error(await res.text());
     const n = await res.json();
     status.style.color = "var(--amber)";
-    status.textContent = n > 0 ? `Done — updated ${n} beer${n === 1 ? "" : "s"}.` : "Saved. No existing beers matched (future posts will use this name).";
+    status.textContent = n > 0 ? "Done — your display name has been updated." : "Phone number not found in the group member list.";
   } catch (e) {
     status.innerHTML = `<span class="err">${esc(e.message)}</span>`;
   }
