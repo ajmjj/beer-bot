@@ -93,20 +93,25 @@ export async function getMemberName(participant) {
   return data?.[0]?.push_name ?? null;
 }
 
-// Soft-delete the beer for a revoked WhatsApp message. Single UPDATE, no second table.
+// Hard-delete the beer for a revoked WhatsApp message and log it in deleted_beers.
 // Returns the matched beer ({ beer_number, member }) or null if it wasn't a tracked live beer.
 export async function markBeerDeleted(waMessageId, deletedBy, deletedByName, byAdmin) {
   const { data, error } = await supabase
     .from("beers")
-    .update({
-      deleted_at: new Date().toISOString(),
-      deleted_by: deletedBy,
-      deleted_by_name: deletedByName,
-      by_admin: byAdmin,
-    })
+    .delete()
     .eq("wa_message_id", waMessageId)
-    .is("deleted_at", null)
     .select("beer_number, member");
   if (error) throw error;
-  return data?.[0] ?? null;
+  const beer = data?.[0];
+  if (!beer) return null;
+
+  const { error: logErr } = await supabase.from("deleted_beers").insert({
+    beer_number: beer.beer_number,
+    poster: beer.member,
+    deleted_by: deletedByName || deletedBy,
+    by_admin: byAdmin,
+    wa_message_id: waMessageId,
+  });
+  if (logErr) throw logErr;
+  return beer;
 }
