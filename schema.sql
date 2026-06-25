@@ -142,6 +142,16 @@ update members set member = coalesce(push_name, mask_phone(participant)) where m
 -- Time-pattern views use Europe/Berlin local time.
 -- =========================================================================
 
+-- Drop first: create-or-replace cannot change a column's type, and some of
+-- these views changed count(*) (bigint) to count(*)::int. None depend on each
+-- other, so a plain drop is safe.
+drop view if exists
+  totals, leaderboard_alltime, daily_counts, day_extremes,
+  v_daily_series, v_day_of_week, v_hourly_matrix, v_monthly, v_weekly,
+  v_leaderboard_active, v_biggest_day, v_highest_week, v_milestones,
+  v_forecast, v_admin_deletes, v_participation,
+  v_member_stats, v_members;
+
 create or replace view totals as
   select count(*) total_beers,
          (select count(*) from members) as members,
