@@ -276,9 +276,7 @@ alter table members add column if not exists phone     text;
 alter table members add column if not exists member    text;
 alter table members add column if not exists push_name text;
 
--- Migrate display names from member_names into members, then drop member_names.
-update members m set member = mn.display_name
-  from member_names mn where mn.participant = m.participant;
+-- Populate phone from participant (idempotent).
 update members set phone = participant where phone is null;
 update members m set push_name = (
   select b.push_name from beers b
