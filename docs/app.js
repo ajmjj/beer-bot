@@ -45,8 +45,6 @@ async function loadOverview() {
   $("avg").textContent = t.active_days ? (t.total_beers / t.active_days).toFixed(1) : "0";
   $("week").textContent = fmt(series.length ? series[series.length - 1].rolling_7d : 0);
   $("highDay").textContent = fmt(d.highest); $("highDayDate").textContent = fmtDate(d.highest_date);
-  $("lowDay").textContent = fmt(d.lowest); $("lowDayDate").textContent = fmtDate(d.lowest_date);
-  $("pctPosting").textContent = mstat ? `${mstat.pct_posting}%` : "–";
   $("bpm").textContent = fmt(mstat?.bpm);
   const pct = (t.total_beers / GOAL) * 100;
   $("bar").style.width = `${Math.min(100, Math.max(pct, 0.3))}%`;
@@ -104,6 +102,7 @@ async function loadLeaderboards() {
 }
 
 async function loadTrends() {
+  loadForecast();
   const [series, monthly, weekly] = await Promise.all([
     view("v_daily_series", "&order=beer_date.asc"),
     view("v_monthly", "&order=month.asc"),
@@ -174,7 +173,7 @@ async function loadForecast() {
 }
 
 // ---------- router (lazy: load a tab's data the first time it's shown) ----------
-const LOADERS = { overview: loadOverview, leaderboards: loadLeaderboards, trends: loadTrends, patterns: loadPatterns, forecast: loadForecast };
+const LOADERS = { overview: loadOverview, leaderboards: loadLeaderboards, trends: loadTrends, patterns: loadPatterns };
 const loaded = new Set();
 
 function show(name) {
