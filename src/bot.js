@@ -9,7 +9,7 @@ import makeWASocket, {
 import pino from "pino";
 import qrcode from "qrcode-terminal";
 import { parseBeer } from "./parser.js";
-import { insertBeers, markBeerDeleted, getMemberName, handleBeerEdit, syncMembers } from "./store.js";
+import { insertBeers, markBeerDeleted, getMemberName, handleBeerEdit, syncMembers, updateMemberPushName } from "./store.js";
 
 const REVOKE = proto.Message.ProtocolMessage.Type.REVOKE;
 const MESSAGE_EDIT = proto.Message.ProtocolMessage.Type.MESSAGE_EDIT;
@@ -117,6 +117,7 @@ async function start() {
           wa_message_id: msg.key.id,
         }]);
         console.log(inserted ? `${catchup ? "[catchup] " : ""}beer #${beer_number} by ${member}` : `dup #${beer_number} (ignored)`);
+        if (inserted && msg.pushName) updateMemberPushName(num(msg.key.participant), msg.pushName).catch(() => {});
       } catch (err) {
         console.error(`write failed for #${beer_number}:`, err.message);
       }

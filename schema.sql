@@ -259,13 +259,32 @@ grant execute on function register_display_name to anon, authenticated;
 
 -- Current group members, synced by the bot on each connect.
 create table if not exists members (
-  participant  text primary key,   -- normalised number (no @s.whatsapp.net)
+  participant  text primary key,
   is_admin     boolean default false,
+  phone        text,               -- same as participant, kept for readability
+  member       text,               -- user-registered display name
+  push_name    text,               -- WhatsApp display name (updated from live beers)
   synced_at    timestamptz default now()
 );
 alter table members enable row level security;
 create policy "public read" on members for select using (true);
 grant select on members to anon, authenticated;
+
+-- Add columns to existing installs (safe no-ops if columns already exist).
+alter table members add column if not exists phone     text;
+alter table members add column if not exists member    text;
+alter table members add column if not exists push_name text;
+
+-- Migrate display names from member_names into members, then drop member_names.
+update members m set member = mn.display_name
+  from member_names mn where mn.participant = m.participant;
+update members set phone = participant where phone is null;
+update members m set push_name = (
+  select b.push_name from beers b
+  where b.participant = m.participant and b.push_name is not null
+  order by b.ts desc limit 1
+) where push_name is null;
+drop table if exists member_names cascade;
 
 -- Group-wide stats that require knowing total membership (not just posters).
 create or replace view v_member_stats as
@@ -281,21 +300,31 @@ create or replace view v_member_stats as
     round(p.posting_members::numeric / nullif(t.total_members, 0) * 100, 0)::int as pct_posting
   from total t, posters p, bcnt b;
 
--- Full membership table: resolves display name, hides participant.
+-- Full membership table: resolves display name, never exposes participant.
 create or replace view v_members as
   select
-    coalesce(
-      mn.display_name,
-      (select push_name from beers where participant = m.participant and push_name is not null order by ts desc limit 1),
-      mask_phone(m.participant)
-    ) as display_name,
+    coalesce(m.member, m.push_name, mask_phone(m.participant)) as display_name,
     m.is_admin,
-    count(b.id)::int      as beers_posted,
-    max(b.ts)             as last_beer_at
+    count(b.id)::int as beers_posted,
+    max(b.ts)        as last_beer_at
   from members m
-  left join beers b  on b.participant = m.participant and b.deleted_at is null
-  left join member_names mn on mn.participant = m.participant
-  group by m.participant, mn.display_name, m.is_admin
+  left join beers b on b.participant = m.participant and b.deleted_at is null
+  group by m.participant, m.member, m.push_name, m.is_admin
   order by beers_posted desc;
 
 grant select on v_member_stats, v_members to anon, authenticated;
+
+-- Update RPC to write member name into members table instead of member_names.
+create or replace function register_display_name(phone text, name text)
+returns int language plpgsql security definer as $$
+declare
+  norm text := regexp_replace(phone, '[^0-9]', '', 'g');
+  n    int;
+begin
+  update members set member = name where participant = norm;
+  update beers   set member = name where participant = norm;
+  get diagnostics n = row_count;
+  return n;
+end;
+$$;
+grant execute on function register_display_name to anon, authenticated;
