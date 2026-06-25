@@ -20,11 +20,20 @@ const PAIR_NUMBER = process.env.PAIR_NUMBER || null; // optional: e.g. 491701234
 const logger = pino({ level: process.env.LOG_LEVEL || "warn" });
 
 function messageText(message) {
+  // Unwrap container types: HD images (viewOnceMessageV2), live photos (viewOnceMessage),
+  // docs-with-caption, and disappearing messages all nest the real message one level down.
+  const m =
+    message?.ephemeralMessage?.message ??
+    message?.viewOnceMessage?.message ??
+    message?.viewOnceMessageV2?.message ??
+    message?.documentWithCaptionMessage?.message ??
+    message;
   return (
-    message?.conversation ||
-    message?.extendedTextMessage?.text ||
-    message?.imageMessage?.caption ||
-    message?.videoMessage?.caption ||
+    m?.conversation ||
+    m?.extendedTextMessage?.text ||
+    m?.imageMessage?.caption ||
+    m?.videoMessage?.caption ||
+    m?.documentMessage?.caption ||
     ""
   );
 }
