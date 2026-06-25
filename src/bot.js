@@ -9,7 +9,7 @@ import makeWASocket, {
 import pino from "pino";
 import qrcode from "qrcode-terminal";
 import { parseBeer } from "./parser.js";
-import { insertBeers, markBeerDeleted, getMemberName, handleBeerEdit } from "./store.js";
+import { insertBeers, markBeerDeleted, getMemberName, handleBeerEdit, getLastBeers } from "./store.js";
 
 const REVOKE = proto.Message.ProtocolMessage.Type.REVOKE;
 const MESSAGE_EDIT = proto.Message.ProtocolMessage.Type.MESSAGE_EDIT;
@@ -57,13 +57,105 @@ async function start() {
     }, 3000);
   }
 
-  sock.ev.on("connection.update", ({ connection, lastDisconnect, qr }) => {
+  // Resolved when connection opens; the history handler awaits it to avoid a race.
+  let resolveAudit;
+  let startupAuditPromise = new Promise((r) => { resolveAudit = r; });
+
+  // On reconnect, compare the last 10 tracked beers against WhatsApp history:
+  // catch offline deletions/edits and insert any new beers we missed.
+  sock.ev.on("messaging-history.set", async ({ messages, isLatest }) => {
+    const audit = await startupAuditPromise;
+    if (!audit || audit.done) return;
+
+    for (const msg of messages) {
+      if (msg.key?.remoteJid !== GROUP_JID) continue;
+      const msgTs = Number(msg.messageTimestamp) * 1000;
+      if (msgTs < audit.oldestSeen) audit.oldestSeen = msgTs;
+
+      const id = msg.key.id;
+
+      // Check offline edits on our tracked beers.
+      if (audit.pending.has(id)) {
+        audit.seen.add(id);
+        const text = messageText(msg.message);
+        const newNum = parseBeer(text);
+        const dbBeer = audit.beers.get(id);
+        if (newNum !== null && newNum !== dbBeer.beer_number) {
+          try {
+            await handleBeerEdit(id, newNum, { raw_caption: text });
+            console.log(`[startup] corrected beer #${dbBeer.beer_number} → #${newNum}`);
+          } catch (err) {
+            console.error("[startup] edit correction failed:", err.message);
+          }
+        }
+      }
+
+      // Insert beers that arrived while we were offline.
+      const text = messageText(msg.message);
+      const beerNum = parseBeer(text);
+      if (beerNum !== null && beerNum > audit.lastBeerNumber) {
+        const member = msg.pushName || num(msg.key.participant) || "unknown";
+        try {
+          const inserted = await insertBeers([{
+            beer_number: beerNum, member,
+            push_name: msg.pushName ?? null,
+            participant: num(msg.key.participant),
+            ts: new Date(msgTs),
+            raw_caption: text, source: "live", wa_message_id: id,
+          }]);
+          if (inserted) console.log(`[startup] caught up beer #${beerNum} by ${member}`);
+        } catch (err) {
+          console.error(`[startup] insert failed for #${beerNum}:`, err.message);
+        }
+      }
+    }
+
+    if (isLatest) {
+      // Beer not seen in history, but history covers its timestamp → deleted while offline.
+      for (const id of audit.pending) {
+        if (audit.seen.has(id)) continue;
+        const beer = audit.beers.get(id);
+        if (audit.oldestSeen <= new Date(beer.ts).getTime()) {
+          try {
+            const deleted = await markBeerDeleted(id, "startup-audit", null, false);
+            if (deleted) console.log(`[startup] removed beer #${deleted.beer_number} (deleted while offline)`);
+          } catch (err) {
+            console.error("[startup] delete failed:", err.message);
+          }
+        }
+      }
+      audit.done = true;
+      console.log("[startup] audit complete");
+    }
+  });
+
+  sock.ev.on("connection.update", async ({ connection, lastDisconnect, qr }) => {
     if (qr && !PAIR_NUMBER) {
       console.log("Scan this QR in WhatsApp -> Linked Devices:");
       qrcode.generate(qr, { small: true });
     }
     if (connection === "open") {
       console.log("connected" + (GROUP_JID ? `, watching ${GROUP_JID}` : ", no GROUP_JID set — logging group JIDs below"));
+      if (GROUP_JID) {
+        try {
+          const lastBeers = await getLastBeers(10);
+          const lastBeerNumber = lastBeers[0]?.beer_number ?? -1;
+          resolveAudit({
+            lastBeerNumber,
+            pending: new Set(lastBeers.map((b) => b.wa_message_id)),
+            beers: new Map(lastBeers.map((b) => [b.wa_message_id, b])),
+            seen: new Set(),
+            oldestSeen: Infinity,
+            done: false,
+          });
+          console.log(`[startup] watching last ${lastBeers.length} beers (newest: #${lastBeerNumber})`);
+        } catch (err) {
+          console.error("[startup] failed to load last beers:", err.message);
+          resolveAudit(null);
+        }
+      } else {
+        resolveAudit(null);
+      }
     }
     if (connection === "close") {
       const code = lastDisconnect?.error?.output?.statusCode;
