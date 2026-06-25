@@ -10,6 +10,7 @@
   "scripts": {
     "bot": "node src/bot.js",
     "backfill": "node scripts/backfill.js",
+    "gaps": "node scripts/gaps.js",
     "test": "node src/parser.js"
   },
   "dependencies": {

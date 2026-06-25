@@ -33,6 +33,31 @@ export async function insertBeers(entries) {
   return data?.length ?? 0; // only newly-inserted rows come back
 }
 
+// Handle a message edit. If newBeerNumber is null, hard-delete the row. Otherwise update it
+// (or insert if the original message wasn't tracked).
+// Returns { action: 'deleted'|'updated'|'inserted'|'noop', beer }
+export async function handleBeerEdit(waMessageId, newBeerNumber, fields) {
+  if (newBeerNumber === null) {
+    const { data, error } = await supabase.from("beers").delete().eq("wa_message_id", waMessageId).select("beer_number, member");
+    if (error) throw error;
+    return { action: data?.length ? "deleted" : "noop", beer: data?.[0] ?? null };
+  }
+
+  const { data: updated, error: ue } = await supabase.from("beers")
+    .update({ beer_number: newBeerNumber, ...fields })
+    .eq("wa_message_id", waMessageId)
+    .select("beer_number");
+  if (ue) throw ue;
+  if (updated?.length) return { action: "updated", beer: updated[0] };
+
+  // Original message wasn't tracked (was skipped) — insert fresh.
+  const { data: inserted, error: ie } = await supabase.from("beers")
+    .insert({ beer_number: newBeerNumber, ...fields, source: "live", wa_message_id: waMessageId })
+    .select("beer_number");
+  if (ie) throw ie;
+  return { action: inserted?.length ? "inserted" : "noop", beer: inserted?.[0] ?? null };
+}
+
 // Best-effort display name for a phone number, from any beer that person has posted.
 export async function getMemberName(participant) {
   if (!participant) return null;
