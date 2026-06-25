@@ -65,7 +65,6 @@ export async function syncMembers(participants) {
   const { error } = await supabase.from("members").upsert(
     participants.map((p) => ({
       participant: p.participant,
-      phone: p.participant,
       is_admin: p.is_admin,
       synced_at: new Date().toISOString(),
     })),

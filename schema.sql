@@ -72,8 +72,7 @@ grant select on deleted_beers to anon, authenticated;
 create table if not exists members (
   participant  text primary key,
   is_admin     boolean default false,
-  phone        text,               -- same as participant, kept for readability
-  member       text,               -- user-registered display name
+  member       text,               -- display name (auto from push_name / masked id)
   push_name    text,               -- WhatsApp display name (updated from live beers)
   synced_at    timestamptz default now()
 );
@@ -83,9 +82,10 @@ create policy "public read" on members for select using (true);
 grant select on members to anon, authenticated;
 
 -- Add columns to existing installs (safe no-ops if columns already exist).
-alter table members add column if not exists phone     text;
 alter table members add column if not exists member    text;
 alter table members add column if not exists push_name text;
+-- phone was a redundant copy of participant, read by nothing — drop it.
+alter table members drop column if exists phone;
 
 -- Trigger: auto-set member = push_name (or masked phone) whenever it would be null.
 -- User-registered names (non-null member) are never overwritten by this.
@@ -133,8 +133,7 @@ grant execute on function register_display_name to anon, authenticated;
 -- Mask any phone numbers already stored in member (mask_phone is idempotent).
 update beers set member = mask_phone(member) where member != mask_phone(member);
 
--- Populate members from participant / past beers.
-update members set phone = participant where phone is null;
+-- Populate members from past beers.
 update members m set push_name = (
   select b.push_name from beers b
   where b.participant = m.participant and b.push_name is not null
@@ -157,7 +156,7 @@ drop view if exists
   v_daily_series, v_day_of_week, v_hourly_matrix, v_monthly, v_weekly,
   v_leaderboard_active, v_biggest_day, v_highest_week, v_milestones,
   v_forecast, v_admin_deletes, v_participation,
-  v_member_stats, v_members;
+  v_member_stats;
 
 create or replace view totals as
   select count(*) total_beers,
@@ -169,7 +168,9 @@ create or replace view totals as
 -- over beers.member (snapshot at post time). Falls back to beers.member for backfill rows
 -- where participant is null or the member is no longer in the group.
 create or replace view leaderboard_alltime as
-  select coalesce(m.member, b.member) as member, count(*)::int as beers
+  select coalesce(m.member, b.member) as member,
+         bool_or(m.is_admin) as is_admin,
+         count(*)::int as beers
   from beers b
   left join members m on m.participant = b.participant
   group by coalesce(m.member, b.member)
@@ -350,25 +351,15 @@ create or replace view v_member_stats as
     round(p.posting_members::numeric / nullif(t.total_members, 0) * 100, 0)::int as pct_posting
   from total t, posters p, bcnt b;
 
--- Full membership table: resolves display name, never exposes participant.
-create or replace view v_members as
-  select
-    coalesce(m.member, m.push_name, mask_phone(m.participant)) as display_name,
-    m.is_admin,
-    count(b.id)::int as beers_posted,
-    max(b.ts)        as last_beer_at
-  from members m
-  left join beers b on b.participant = m.participant
-  group by m.participant, m.member, m.push_name, m.is_admin
-  order by beers_posted desc;
-
 grant select on
   totals, leaderboard_alltime, daily_counts, day_extremes,
   v_daily_series, v_day_of_week, v_hourly_matrix, v_monthly, v_weekly,
   v_leaderboard_active, v_biggest_day, v_highest_week, v_milestones,
   v_forecast, v_admin_deletes, v_participation,
-  v_member_stats, v_members
+  v_member_stats
   to anon, authenticated;
+
+-- v_members removed: the All Members table it fed was dropped from the dashboard.
 
 -- =========================================================================
 -- DROP LEGACY SOFT-DELETE COLUMNS  (one-time; guarded so re-runs are no-ops)

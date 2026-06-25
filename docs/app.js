@@ -38,7 +38,7 @@ const AMBER = "#f5a623";
 
 // ---------- loaders (run once per tab) ----------
 async function loadOverview() {
-  const [[t], [d], series] = await Promise.all([view("totals"), view("day_extremes"), view("v_daily_series", "&order=beer_date.asc")]);
+  const [[t], [d], series, [mstat]] = await Promise.all([view("totals"), view("day_extremes"), view("v_daily_series", "&order=beer_date.asc"), view("v_member_stats")]);
   $("total").textContent = fmt(t.total_beers);
   $("members").textContent = fmt(t.members);
   $("days").textContent = fmt(t.active_days);
@@ -46,6 +46,8 @@ async function loadOverview() {
   $("week").textContent = fmt(series.length ? series[series.length - 1].rolling_7d : 0);
   $("highDay").textContent = fmt(d.highest); $("highDayDate").textContent = fmtDate(d.highest_date);
   $("lowDay").textContent = fmt(d.lowest); $("lowDayDate").textContent = fmtDate(d.lowest_date);
+  $("pctPosting").textContent = mstat ? `${mstat.pct_posting}%` : "–";
+  $("bpm").textContent = fmt(mstat?.bpm);
   const pct = (t.total_beers / GOAL) * 100;
   $("bar").style.width = `${Math.min(100, Math.max(pct, 0.3))}%`;
   $("pct").textContent = `${pct.toFixed(4)}% · ${fmt(GOAL - t.total_beers)} to go`;
@@ -68,10 +70,13 @@ async function loadLeaderboards() {
     ["Top 10 share", part ? `${part.top10_pct}%` : "–"],
   ].map(([l, v]) => `<div class="card"><div class="v">${v}</div><div class="l">${l}</div></div>`).join("");
 
+  // member name with a ★ for admins (hover shows "admin")
+  const memberName = (r) => esc(r.member) + (r.is_admin ? ` <span class="adm" title="admin">★</span>` : "");
+
   // top performers with show-all toggle
   let expanded = false;
   const drawBoard = () => {
-    const rows = (expanded ? board : board.slice(0, 20)).map((r, i) => [{ v: i + 1, cls: "rank" }, esc(r.member), { v: fmt(r.beers), cls: "beers" }]);
+    const rows = (expanded ? board : board.slice(0, 20)).map((r, i) => [{ v: i + 1, cls: "rank" }, memberName(r), { v: fmt(r.beers), cls: "beers" }]);
     table("board", null, rows);
   };
   drawBoard();
@@ -168,27 +173,8 @@ async function loadForecast() {
   if (!milestones.length) $("milestones").innerHTML = `<tbody><tr><td style="color:var(--muted)">No milestones reached yet.</td></tr></tbody>`;
 }
 
-async function loadMembers() {
-  const [[mstat], members] = await Promise.all([view("v_member_stats"), view("v_members")]);
-
-  $("member-stats").innerHTML = [
-    ["Group size", fmt(mstat?.total_members)],
-    ["Members posting", fmt(mstat?.posting_members)],
-    ["% posting", mstat ? `${mstat.pct_posting}%` : "–"],
-    ["Beers / member", fmt(mstat?.bpm)],
-  ].map(([l, v]) => `<div class="card"><div class="v">${v}</div><div class="l">${l}</div></div>`).join("");
-
-  table("board-members", null,
-    members.map((r) => [
-      esc(r.display_name ?? "–"),
-      { v: fmt(r.beers_posted), cls: "beers" },
-      { v: r.last_beer_at ? fmtDate(r.last_beer_at) : "–", cls: "num" },
-      { v: r.is_admin ? "★" : "", cls: "num" },
-    ]));
-}
-
 // ---------- router (lazy: load a tab's data the first time it's shown) ----------
-const LOADERS = { overview: loadOverview, leaderboards: loadLeaderboards, trends: loadTrends, patterns: loadPatterns, forecast: loadForecast, members: loadMembers };
+const LOADERS = { overview: loadOverview, leaderboards: loadLeaderboards, trends: loadTrends, patterns: loadPatterns, forecast: loadForecast };
 const loaded = new Set();
 
 function show(name) {
