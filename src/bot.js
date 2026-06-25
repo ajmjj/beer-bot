@@ -9,9 +9,10 @@ import makeWASocket, {
 import pino from "pino";
 import qrcode from "qrcode-terminal";
 import { parseBeer } from "./parser.js";
-import { insertBeers, markBeerDeleted, getMemberName } from "./store.js";
+import { insertBeers, markBeerDeleted, getMemberName, handleBeerEdit } from "./store.js";
 
 const REVOKE = proto.Message.ProtocolMessage.Type.REVOKE;
+const MESSAGE_EDIT = proto.Message.ProtocolMessage.Type.MESSAGE_EDIT;
 const num = (jid) => (jid ? jid.split("@")[0].split(":")[0] : null); // jid -> bare number
 
 const GROUP_JID = process.env.GROUP_JID || null;
@@ -85,6 +86,12 @@ async function start() {
         continue;
       }
 
+      // Message edit: re-parse the new content and update/delete accordingly.
+      if (msg.message?.protocolMessage?.type === MESSAGE_EDIT) {
+        await handleEdit(msg);
+        continue;
+      }
+
       const text = messageText(msg.message);
       const beer_number = parseBeer(text);
       const member = msg.pushName || num(msg.key.participant) || "unknown";
@@ -109,6 +116,31 @@ async function start() {
       }
     }
   });
+}
+
+async function handleEdit(msg) {
+  const proto = msg.message.protocolMessage;
+  const originalId = proto.key?.id;
+  if (!originalId) return;
+
+  const newText = messageText(proto.editedMessage);
+  const beer_number = parseBeer(newText);
+  const member = msg.pushName || num(msg.key.participant) || "unknown";
+
+  try {
+    const result = await handleBeerEdit(originalId, beer_number, {
+      member,
+      push_name: msg.pushName ?? null,
+      participant: num(msg.key.participant),
+      raw_caption: newText,
+    });
+    if (result.action === "deleted") console.log(`edit→non-number: hard deleted beer #${result.beer?.beer_number} (${result.beer?.member})`);
+    else if (result.action === "updated") console.log(`edit: beer #${result.beer?.beer_number} updated by ${member}`);
+    else if (result.action === "inserted") console.log(`edit→new: beer #${beer_number} by ${member}`);
+    else console.log(`edit for untracked message ${originalId} — ignored`);
+  } catch (err) {
+    console.error("edit handling failed:", err.message);
+  }
 }
 
 // A revoked message: figure out who deleted it (and whether they're an admin),
