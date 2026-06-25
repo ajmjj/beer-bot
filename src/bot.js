@@ -31,7 +31,11 @@ function messageText(message) {
 async function start() {
   const { state, saveCreds } = await useMultiFileAuthState(".baileys_auth");
   const { version } = await fetchLatestBaileysVersion();
-  const sock = makeWASocket({ version, auth: state, logger });
+  const sock = makeWASocket({
+    version, auth: state, logger,
+    syncFullHistory: true,
+    getMessage: async () => undefined, // ponytail: no local cache; tells Baileys to fetch missed messages from server
+  });
 
   sock.ev.on("creds.update", saveCreds);
 
@@ -62,7 +66,8 @@ async function start() {
     }
   });
 
-  sock.ev.on("messages.upsert", async ({ messages }) => {
+  sock.ev.on("messages.upsert", async ({ messages, type }) => {
+    const catchup = type === "append";
     for (const msg of messages) {
       const jid = msg.key?.remoteJid;
       if (!jid?.endsWith("@g.us")) continue; // groups only
@@ -98,7 +103,7 @@ async function start() {
           source: "live",
           wa_message_id: msg.key.id,
         }]);
-        console.log(inserted ? `beer #${beer_number} by ${member}` : `dup #${beer_number} (ignored)`);
+        console.log(inserted ? `${catchup ? "[catchup] " : ""}beer #${beer_number} by ${member}` : `dup #${beer_number} (ignored)`);
       } catch (err) {
         console.error(`write failed for #${beer_number}:`, err.message);
       }
