@@ -52,15 +52,13 @@ async function loadOverview() {
 }
 
 async function loadLeaderboards() {
-  const [board, active, week, bigday, deletes, [part], [mstat], members] = await Promise.all([
+  const [board, active, week, bigday, deletes, [part]] = await Promise.all([
     view("leaderboard_alltime"),
     view("v_leaderboard_active"),
     view("v_highest_week"),
     view("v_biggest_day"),
     view("v_admin_deletes"),
     view("v_participation"),
-    view("v_member_stats"),
-    view("v_members"),
   ]);
 
   $("participation").innerHTML = [
@@ -69,21 +67,6 @@ async function loadLeaderboards() {
     ["Avg / person", fmt(part?.avg_per_person)],
     ["Top 10 share", part ? `${part.top10_pct}%` : "–"],
   ].map(([l, v]) => `<div class="card"><div class="v">${v}</div><div class="l">${l}</div></div>`).join("");
-
-  $("member-stats").innerHTML = [
-    ["Group size", fmt(mstat?.total_members)],
-    ["Members posting", fmt(mstat?.posting_members)],
-    ["% posting", mstat ? `${mstat.pct_posting}%` : "–"],
-    ["Beers / member", fmt(mstat?.bpm)],
-  ].map(([l, v]) => `<div class="card"><div class="v">${v}</div><div class="l">${l}</div></div>`).join("");
-
-  table("board-members", null,
-    members.map((r) => [
-      esc(r.display_name ?? "–"),
-      { v: fmt(r.beers_posted), cls: "beers" },
-      { v: r.last_beer_at ? fmtDate(r.last_beer_at) : "–", cls: "num" },
-      { v: r.is_admin ? "★" : "", cls: "num" },
-    ]));
 
   // top performers with show-all toggle
   let expanded = false;
@@ -185,8 +168,27 @@ async function loadForecast() {
   if (!milestones.length) $("milestones").innerHTML = `<tbody><tr><td style="color:var(--muted)">No milestones reached yet.</td></tr></tbody>`;
 }
 
+async function loadMembers() {
+  const [[mstat], members] = await Promise.all([view("v_member_stats"), view("v_members")]);
+
+  $("member-stats").innerHTML = [
+    ["Group size", fmt(mstat?.total_members)],
+    ["Members posting", fmt(mstat?.posting_members)],
+    ["% posting", mstat ? `${mstat.pct_posting}%` : "–"],
+    ["Beers / member", fmt(mstat?.bpm)],
+  ].map(([l, v]) => `<div class="card"><div class="v">${v}</div><div class="l">${l}</div></div>`).join("");
+
+  table("board-members", null,
+    members.map((r) => [
+      esc(r.display_name ?? "–"),
+      { v: fmt(r.beers_posted), cls: "beers" },
+      { v: r.last_beer_at ? fmtDate(r.last_beer_at) : "–", cls: "num" },
+      { v: r.is_admin ? "★" : "", cls: "num" },
+    ]));
+}
+
 // ---------- router (lazy: load a tab's data the first time it's shown) ----------
-const LOADERS = { overview: loadOverview, leaderboards: loadLeaderboards, trends: loadTrends, patterns: loadPatterns, forecast: loadForecast };
+const LOADERS = { overview: loadOverview, leaderboards: loadLeaderboards, trends: loadTrends, patterns: loadPatterns, forecast: loadForecast, members: loadMembers };
 const loaded = new Set();
 
 function show(name) {
