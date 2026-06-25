@@ -41,7 +41,6 @@ async function loadOverview() {
   const [[t], [d], series, [mstat]] = await Promise.all([view("totals"), view("day_extremes"), view("v_daily_series", "&order=beer_date.asc"), view("v_member_stats")]);
   $("total").textContent = fmt(t.total_beers);
   $("members").textContent = fmt(mstat?.posting_members);
-  $("lurkers").textContent = fmt(mstat ? mstat.total_members - mstat.posting_members : null);
   $("days").textContent = fmt(t.active_days);
   $("avg").textContent = t.active_days ? (t.total_beers / t.active_days).toFixed(1) : "0";
   $("week").textContent = fmt(series.length ? series[series.length - 1].rolling_7d : 0);
@@ -68,13 +67,10 @@ async function loadLeaderboards() {
     ["Top 10 share", part ? `${part.top10_pct}%` : "–"],
   ].map(([l, v]) => `<div class="card"><div class="v">${v}</div><div class="l">${l}</div></div>`).join("");
 
-  // member name with a ★ for admins (hover shows "admin")
-  const memberName = (r) => esc(r.member) + (r.is_admin ? ` <span class="adm" title="admin">★</span>` : "");
-
   // top performers with show-all toggle
   let expanded = false;
   const drawBoard = () => {
-    const rows = (expanded ? board : board.slice(0, 20)).map((r, i) => [{ v: i + 1, cls: "rank" }, memberName(r), { v: fmt(r.beers), cls: "beers" }]);
+    const rows = (expanded ? board : board.slice(0, 20)).map((r, i) => [{ v: i + 1, cls: "rank" }, esc(r.member), { v: fmt(r.beers), cls: "beers" }]);
     table("board", null, rows);
   };
   drawBoard();
