@@ -3,6 +3,9 @@
 import "dotenv/config";
 import { readFileSync } from "node:fs";
 import { parseExportLine, parseBeer } from "../src/parser.js";
+
+const isPhone = (s) => !/[a-zA-Z~]/.test(s) && s.replace(/\D/g, '').length >= 8;
+const normalizePhone = (s) => s.replace(/\D/g, '');
 import { insertBeers } from "../src/store.js";
 
 const file = process.argv[2] || "chat_exports/_chat.txt";
@@ -18,7 +21,8 @@ for (const line of lines) {
     if (row.body.trim()) skipped++;
     continue;
   }
-  entries.push({ beer_number, member: row.member, ts: row.ts, raw_caption: row.body, source: "export" });
+  const participant = isPhone(row.member) ? normalizePhone(row.member) : null;
+  entries.push({ beer_number, member: row.member, participant, ts: row.ts, raw_caption: row.body, source: "export" });
 }
 
 console.log(`parsed ${entries.length} beers, ${skipped} non-beer messages skipped`);

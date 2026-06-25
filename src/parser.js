@@ -19,6 +19,14 @@ export function cleanText(text) {
     .trim();
 }
 
+// Mask the middle digits of a phone-number-like string. Display names (contain letters) pass through.
+export function maskPhone(s) {
+  if (!s || /[a-zA-Z~]/.test(s)) return s;
+  const digits = s.replace(/\D/g, '');
+  if (digits.length < 8) return s;
+  return (s.startsWith('+') ? '+' : '') + digits.slice(0, 4) + 'x'.repeat(digits.length - 8) + digits.slice(-4);
+}
+
 // A valid beer is a message whose cleaned text is *purely* a number.
 // Returns the integer, or null (caller logs nulls to the skipped log — fail loud).
 export function parseBeer(text) {

@@ -104,6 +104,16 @@
         <section class="box"><h2>Biggest single day</h2><table><tbody id="board-bigday"></tbody></table></section>
         <section class="box"><h2>Admin deleting leaderboard</h2><table><tbody id="admin-deletes"></tbody></table></section>
       </div>
+      <section class="box">
+        <h2>Set your display name</h2>
+        <p style="color:var(--muted);font-size:13px;margin:0 0 12px">Phone numbers are masked by default. Enter your number to claim a display name.</p>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <input id="reg-phone" type="tel" placeholder="+49 175 1234567" style="flex:1;min-width:160px;background:var(--bg);border:1px solid var(--line);border-radius:8px;color:var(--foam);padding:8px 12px;font-size:14px">
+          <input id="reg-name" type="text" placeholder="Display name" style="flex:1;min-width:160px;background:var(--bg);border:1px solid var(--line);border-radius:8px;color:var(--foam);padding:8px 12px;font-size:14px">
+          <button onclick="registerName()" style="background:var(--amber);color:#15110b;border:none;border-radius:8px;padding:8px 16px;font-size:14px;font-weight:700;cursor:pointer">Save</button>
+        </div>
+        <div id="reg-status" style="font-size:13px;margin-top:8px"></div>
+      </section>
     </div>
 
     <!-- TRENDS -->
