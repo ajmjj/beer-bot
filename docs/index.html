@@ -70,6 +70,7 @@
       <button data-tab="trends">Trends</button>
       <button data-tab="patterns">Patterns</button>
       <button data-tab="forecast">Milestones &amp; Forecast</button>
+      <button data-tab="members">Members</button>
     </nav>
 
     <!-- OVERVIEW -->
@@ -93,8 +94,6 @@
     <!-- LEADERBOARDS -->
     <div class="tab" id="leaderboards">
       <div class="cards" id="participation"></div>
-      <div class="cards" id="member-stats"></div>
-      <section class="box"><h2>All members</h2><table><thead><tr><th>Member</th><th class="num">Beers</th><th class="num">Last beer</th><th class="num">Admin</th></tr></thead><tbody id="board-members"></tbody></table></section>
       <section class="box">
         <h2>Top performers</h2>
         <table><tbody id="board"></tbody></table>
@@ -106,6 +105,10 @@
         <section class="box"><h2>Biggest single day</h2><table><tbody id="board-bigday"></tbody></table></section>
         <section class="box"><h2>Admin deleting leaderboard</h2><table><tbody id="admin-deletes"></tbody></table></section>
       </div>
+    </div>
+
+    <!-- MEMBERS -->
+    <div class="tab" id="members">
       <section class="box">
         <h2>Set your display name</h2>
         <p style="color:var(--muted);font-size:13px;margin:0 0 12px">Phone numbers are masked by default. Enter your number to claim a display name.</p>
@@ -116,6 +119,8 @@
         </div>
         <div id="reg-status" style="font-size:13px;margin-top:8px"></div>
       </section>
+      <div class="cards" id="member-stats"></div>
+      <section class="box"><h2>All members</h2><table><thead><tr><th>Member</th><th class="num">Beers</th><th class="num">Last beer</th><th class="num">Admin</th></tr></thead><tbody id="board-members"></tbody></table></section>
     </div>
 
     <!-- TRENDS -->
