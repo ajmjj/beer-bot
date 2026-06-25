@@ -63,11 +63,22 @@ export async function handleBeerEdit(waMessageId, newBeerNumber, fields) {
 export async function syncMembers(participants) {
   if (!participants.length) return 0;
   const { error } = await supabase.from("members").upsert(
-    participants.map((p) => ({ participant: p.participant, is_admin: p.is_admin, synced_at: new Date().toISOString() })),
+    participants.map((p) => ({
+      participant: p.participant,
+      phone: p.participant,
+      is_admin: p.is_admin,
+      synced_at: new Date().toISOString(),
+    })),
     { onConflict: "participant" },
   );
   if (error) throw error;
   return participants.length;
+}
+
+// Keep members.push_name current whenever a live beer comes in.
+export async function updateMemberPushName(participant, pushName) {
+  if (!participant || !pushName) return;
+  await supabase.from("members").update({ push_name: pushName }).eq("participant", participant);
 }
 
 // Best-effort display name for a phone number, from any beer that person has posted.
