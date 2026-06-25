@@ -93,6 +93,9 @@ create or replace function members_default_name() returns trigger language plpgs
 begin
   if new.member is null then
     new.member := coalesce(new.push_name, mask_phone(new.participant));
+  elsif new.push_name is not null and new.member = mask_phone(new.participant) then
+    -- member was a masked-phone placeholder; we now know the push_name, so use it.
+    new.member := new.push_name;
   end if;
   return new;
 end;
@@ -141,6 +144,11 @@ update members m set push_name = (
 ) where push_name is null;
 drop table if exists member_names cascade;
 update members set member = coalesce(push_name, mask_phone(participant)) where member is null;
+
+-- Refresh members whose name is still a masked-phone placeholder but whose
+-- push_name is now known (push_name arrives after the initial member sync).
+update members set member = push_name
+  where push_name is not null and member = mask_phone(participant);
 
 -- =========================================================================
 -- DASHBOARD VIEWS  (re-runnable: create-or-replace + grant. Safe to paste
