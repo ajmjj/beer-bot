@@ -95,6 +95,54 @@ export async function updateMemberPushName(participant, pushName) {
   await supabase.from("members").update({ push_name: pushName }).eq("participant", participant);
 }
 
+// When someone posts live, adopt their orphaned backfill rows — old beers with
+// no participant that were attributed to the same display name — by stamping
+// them with this LID. Retro-links their imported history to their live identity.
+// Returns the number of rows claimed.
+export async function claimBackfillBeers(participant, pushName) {
+  if (!participant || !pushName) return 0;
+  const { data, error } = await supabase.from("beers")
+    .update({ participant })
+    .is("participant", null)
+    .ilike("member", pushName) // case-insensitive exact match (names carry no % / _)
+    .select("beer_number");
+  if (error) throw error;
+  return data?.length ?? 0;
+}
+
+// Batch version of claimBackfillBeers for when the bot isn't live (e.g. at the
+// end of a backfill import). Learns name -> LID from every live (message-id) row,
+// then stamps each orphaned backfill row (no participant) whose display name
+// matches. Returns the number of rows linked.
+export async function reconcileBackfillParticipants() {
+  const { data: rows, error } = await supabase
+    .from("beers")
+    .select("beer_number, participant, wa_message_id, member, push_name");
+  if (error) throw error;
+
+  const norm = (s) => (s || "").trim().toLowerCase();
+  const nameToLid = {};
+  for (const b of rows) {
+    if (!b.wa_message_id || !b.participant) continue; // only trust live rows' LID
+    for (const n of [b.push_name, b.member]) { const k = norm(n); if (k) nameToLid[k] = b.participant; }
+  }
+
+  const byLid = {}; // lid -> [beer_number, ...] to claim
+  for (const b of rows) {
+    if (b.participant) continue;
+    const lid = nameToLid[norm(b.member)];
+    if (lid) (byLid[lid] ||= []).push(b.beer_number);
+  }
+
+  let claimed = 0;
+  for (const [lid, nums] of Object.entries(byLid)) {
+    const { error: e } = await supabase.from("beers").update({ participant: lid }).in("beer_number", nums);
+    if (e) throw e;
+    claimed += nums.length;
+  }
+  return claimed;
+}
+
 // Best-effort display name for a phone number, from any beer that person has posted.
 export async function getMemberName(participant) {
   if (!participant) return null;

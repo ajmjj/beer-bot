@@ -6,7 +6,7 @@ import { parseExportLine, parseBeer } from "../src/parser.js";
 
 const isPhone = (s) => !/[a-zA-Z~]/.test(s) && s.replace(/\D/g, '').length >= 8;
 const normalizePhone = (s) => s.replace(/\D/g, '');
-import { insertBeers } from "../src/store.js";
+import { insertBeers, reconcileBackfillParticipants } from "../src/store.js";
 
 const file = process.argv[2] || "chat_exports/_chat.txt";
 const lines = readFileSync(file, "utf8").split(/\r?\n/);
@@ -28,3 +28,6 @@ for (const line of lines) {
 console.log(`parsed ${entries.length} beers, ${skipped} non-beer messages skipped`);
 const inserted = await insertBeers(entries);
 console.log(`inserted ${inserted} new rows (${entries.length - inserted} already present)`);
+
+const linked = await reconcileBackfillParticipants();
+console.log(`linked ${linked} backfill rows to a known LID by name`);
