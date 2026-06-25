@@ -252,3 +252,50 @@ begin
 end;
 $$;
 grant execute on function register_display_name to anon, authenticated;
+
+-- =========================================================================
+-- MEMBERSHIP  (re-runnable)
+-- =========================================================================
+
+-- Current group members, synced by the bot on each connect.
+create table if not exists members (
+  participant  text primary key,   -- normalised number (no @s.whatsapp.net)
+  is_admin     boolean default false,
+  synced_at    timestamptz default now()
+);
+alter table members enable row level security;
+create policy "public read" on members for select using (true);
+grant select on members to anon, authenticated;
+
+-- Group-wide stats that require knowing total membership (not just posters).
+create or replace view v_member_stats as
+  with
+    total   as (select count(*)                        as total_members  from members),
+    posters as (select count(distinct participant)     as posting_members from beers where deleted_at is null and participant is not null),
+    bcnt    as (select count(*)                        as total_beers    from beers where deleted_at is null)
+  select
+    t.total_members::int,
+    p.posting_members::int,
+    b.total_beers::int,
+    round(b.total_beers::numeric / nullif(t.total_members, 0), 1) as bpm,
+    round(p.posting_members::numeric / nullif(t.total_members, 0) * 100, 0)::int as pct_posting
+  from total t, posters p, bcnt b;
+
+-- Full membership table: resolves display name, hides participant.
+create or replace view v_members as
+  select
+    coalesce(
+      mn.display_name,
+      (select push_name from beers where participant = m.participant and push_name is not null order by ts desc limit 1),
+      mask_phone(m.participant)
+    ) as display_name,
+    m.is_admin,
+    count(b.id)::int      as beers_posted,
+    max(b.ts)             as last_beer_at
+  from members m
+  left join beers b  on b.participant = m.participant and b.deleted_at is null
+  left join member_names mn on mn.participant = m.participant
+  group by m.participant, mn.display_name, m.is_admin
+  order by beers_posted desc;
+
+grant select on v_member_stats, v_members to anon, authenticated;

@@ -59,6 +59,17 @@ export async function handleBeerEdit(waMessageId, newBeerNumber, fields) {
   return { action: inserted?.length ? "inserted" : "noop", beer: inserted?.[0] ?? null };
 }
 
+// Sync current group members. participants: [{ participant: string, is_admin: boolean }]
+export async function syncMembers(participants) {
+  if (!participants.length) return 0;
+  const { error } = await supabase.from("members").upsert(
+    participants.map((p) => ({ participant: p.participant, is_admin: p.is_admin, synced_at: new Date().toISOString() })),
+    { onConflict: "participant" },
+  );
+  if (error) throw error;
+  return participants.length;
+}
+
 // Best-effort display name for a phone number, from any beer that person has posted.
 export async function getMemberName(participant) {
   if (!participant) return null;
