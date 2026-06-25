@@ -1,4 +1,15 @@
--- Beer Bot — Supabase schema. Run once in the Supabase SQL editor.
+-- Beer Bot — Supabase schema.
+--
+-- Fresh install: run the whole file top to bottom.
+-- Existing database: skip the `create table beers` block below (it has no
+-- IF NOT EXISTS and will error); everything after it is re-runnable and
+-- correctly ordered — tables, then functions, then data migrations, then
+-- views, and finally the one-time soft-delete column drop (which must come
+-- last, after the views stop referencing those columns).
+
+-- =========================================================================
+-- BASE TABLE  (fresh install only)
+-- =========================================================================
 
 create table beers (
   id            bigint generated always as identity primary key,
@@ -22,11 +33,27 @@ alter table beers enable row level security;
 create policy "public read" on beers for select using (true);
 
 -- =========================================================================
--- DELETIONS  (hard delete: a revoked beer leaves beers and is logged here)
--- Re-runnable. The DO block below migrates any legacy soft-deleted rows out
--- of beers and drops the old soft-delete columns; it is a no-op once done.
+-- TABLES & FUNCTIONS  (re-runnable)
 -- =========================================================================
 
+-- Mask middle digits of phone-number-like strings; display names pass through.
+-- Defined early: the members trigger, backfills and views all depend on it.
+create or replace function mask_phone(m text) returns text language plpgsql immutable as $$
+declare
+  digits text := regexp_replace(m, '[^0-9]', '', 'g');
+  mid    int;
+begin
+  if m ~ '[a-zA-Z~]' or length(digits) < 8 then return m; end if;
+  mid := length(digits) - 8;
+  return case when left(m, 1) = '+' then '+' else '' end
+    || left(digits, 4) || repeat('x', mid) || right(digits, 4);
+end;
+$$;
+
+-- Deletion log (hard delete: a revoked beer leaves beers and is logged here).
+-- Older installs had a `deleted_beers` VIEW over soft-deleted rows — drop it
+-- before creating the table of the same name.
+drop view if exists deleted_beers;
 create table if not exists deleted_beers (
   id            bigint generated always as identity primary key,
   beer_number   integer not null,
@@ -41,22 +68,73 @@ drop policy if exists "public read" on deleted_beers;
 create policy "public read" on deleted_beers for select using (true);
 grant select on deleted_beers to anon, authenticated;
 
--- One-time migration off the old soft-delete columns (guarded so re-runs are no-ops).
-do $$
+-- Current group members, synced by the bot on each connect.
+create table if not exists members (
+  participant  text primary key,
+  is_admin     boolean default false,
+  phone        text,               -- same as participant, kept for readability
+  member       text,               -- user-registered display name
+  push_name    text,               -- WhatsApp display name (updated from live beers)
+  synced_at    timestamptz default now()
+);
+alter table members enable row level security;
+drop policy if exists "public read" on members;
+create policy "public read" on members for select using (true);
+grant select on members to anon, authenticated;
+
+-- Add columns to existing installs (safe no-ops if columns already exist).
+alter table members add column if not exists phone     text;
+alter table members add column if not exists member    text;
+alter table members add column if not exists push_name text;
+
+-- Trigger: auto-set member = push_name (or masked phone) whenever it would be null.
+-- User-registered names (non-null member) are never overwritten by this.
+create or replace function members_default_name() returns trigger language plpgsql as $$
 begin
-  if exists (select 1 from information_schema.columns
-             where table_name = 'beers' and column_name = 'deleted_at') then
-    insert into deleted_beers (beer_number, poster, deleted_by, by_admin, deleted_at, wa_message_id)
-      select beer_number, member, coalesce(deleted_by_name, deleted_by), by_admin, deleted_at, wa_message_id
-      from beers where deleted_at is not null;
-    delete from beers where deleted_at is not null;
-    alter table beers
-      drop column deleted_at,
-      drop column deleted_by,
-      drop column deleted_by_name,
-      drop column by_admin;
+  if new.member is null then
+    new.member := coalesce(new.push_name, mask_phone(new.participant));
   end if;
-end $$;
+  return new;
+end;
+$$;
+drop trigger if exists members_default_name_trigger on members;
+create trigger members_default_name_trigger
+  before insert or update on members
+  for each row execute function members_default_name();
+
+-- RPC: sets member name in both members and beers so they stay in sync.
+-- security definer so it can update beers despite anon read-only RLS.
+-- Returns 1 if the phone matched a known group member, 0 if not found.
+create or replace function register_display_name(phone text, name text)
+returns int language plpgsql security definer as $$
+declare
+  norm text := regexp_replace(phone, '[^0-9]', '', 'g');
+  n    int;
+begin
+  update members set member = name where participant = norm;
+  get diagnostics n = row_count;
+  update beers set member = name where participant = norm;
+  return n;
+end;
+$$;
+grant execute on function register_display_name to anon, authenticated;
+
+-- =========================================================================
+-- DATA MIGRATIONS  (idempotent; safe to re-run)
+-- =========================================================================
+
+-- Mask any phone numbers already stored in member (mask_phone is idempotent).
+update beers set member = mask_phone(member) where member != mask_phone(member);
+
+-- Populate members from participant / past beers.
+update members set phone = participant where phone is null;
+update members m set push_name = (
+  select b.push_name from beers b
+  where b.participant = m.participant and b.push_name is not null
+  order by b.ts desc limit 1
+) where push_name is null;
+drop table if exists member_names cascade;
+update members set member = coalesce(push_name, mask_phone(participant)) where member is null;
 
 -- =========================================================================
 -- DASHBOARD VIEWS  (re-runnable: create-or-replace + grant. Safe to paste
@@ -241,84 +319,6 @@ create or replace view v_participation as
          round(top10.s::numeric / nullif(t.total, 0) * 100, 0)::int as top10_pct
   from t, top10;
 
-grant select on
-  totals, leaderboard_alltime, daily_counts, day_extremes,
-  v_daily_series, v_day_of_week, v_hourly_matrix, v_monthly, v_weekly,
-  v_leaderboard_active, v_biggest_day, v_highest_week, v_milestones,
-  v_forecast, v_admin_deletes, v_participation
-  to anon, authenticated;
-
--- =========================================================================
--- PHONE PRIVACY  (re-runnable)
--- =========================================================================
-
--- Mask middle digits of phone-number-like strings; display names pass through.
-create or replace function mask_phone(m text) returns text language plpgsql immutable as $$
-declare
-  digits text := regexp_replace(m, '[^0-9]', '', 'g');
-  mid    int;
-begin
-  if m ~ '[a-zA-Z~]' or length(digits) < 8 then return m; end if;
-  mid := length(digits) - 8;
-  return case when left(m, 1) = '+' then '+' else '' end
-    || left(digits, 4) || repeat('x', mid) || right(digits, 4);
-end;
-$$;
-
--- One-time migration: mask any phone numbers already stored in member.
--- Safe to re-run: mask_phone is idempotent on already-masked values.
-update beers set member = mask_phone(member) where member != mask_phone(member);
-
--- =========================================================================
--- MEMBERSHIP  (re-runnable)
--- =========================================================================
-
--- Current group members, synced by the bot on each connect.
-create table if not exists members (
-  participant  text primary key,
-  is_admin     boolean default false,
-  phone        text,               -- same as participant, kept for readability
-  member       text,               -- user-registered display name
-  push_name    text,               -- WhatsApp display name (updated from live beers)
-  synced_at    timestamptz default now()
-);
-alter table members enable row level security;
-drop policy if exists "public read" on members;
-create policy "public read" on members for select using (true);
-grant select on members to anon, authenticated;
-
--- Add columns to existing installs (safe no-ops if columns already exist).
-alter table members add column if not exists phone     text;
-alter table members add column if not exists member    text;
-alter table members add column if not exists push_name text;
-
--- Populate phone from participant (idempotent).
-update members set phone = participant where phone is null;
-update members m set push_name = (
-  select b.push_name from beers b
-  where b.participant = m.participant and b.push_name is not null
-  order by b.ts desc limit 1
-) where push_name is null;
-drop table if exists member_names cascade;
-
--- Trigger: auto-set member = push_name (or masked phone) whenever it would be null.
--- User-registered names (non-null member) are never overwritten by this.
-create or replace function members_default_name() returns trigger language plpgsql as $$
-begin
-  if new.member is null then
-    new.member := coalesce(new.push_name, mask_phone(new.participant));
-  end if;
-  return new;
-end;
-$$;
-drop trigger if exists members_default_name_trigger on members;
-create trigger members_default_name_trigger
-  before insert or update on members
-  for each row execute function members_default_name();
-
--- Backfill member for any existing rows that are still null.
-update members set member = coalesce(push_name, mask_phone(participant)) where member is null;
-
 -- Group-wide stats that require knowing total membership (not just posters).
 create or replace view v_member_stats as
   with
@@ -345,20 +345,32 @@ create or replace view v_members as
   group by m.participant, m.member, m.push_name, m.is_admin
   order by beers_posted desc;
 
-grant select on v_member_stats, v_members to anon, authenticated;
+grant select on
+  totals, leaderboard_alltime, daily_counts, day_extremes,
+  v_daily_series, v_day_of_week, v_hourly_matrix, v_monthly, v_weekly,
+  v_leaderboard_active, v_biggest_day, v_highest_week, v_milestones,
+  v_forecast, v_admin_deletes, v_participation,
+  v_member_stats, v_members
+  to anon, authenticated;
 
--- Update RPC: sets member name in both members and beers so they stay in sync.
--- Returns 1 if the phone matched a known group member, 0 if not found.
-create or replace function register_display_name(phone text, name text)
-returns int language plpgsql security definer as $$
-declare
-  norm text := regexp_replace(phone, '[^0-9]', '', 'g');
-  n    int;
+-- =========================================================================
+-- DROP LEGACY SOFT-DELETE COLUMNS  (one-time; guarded so re-runs are no-ops)
+-- Runs last: the views above have just been redefined to not reference these
+-- columns, so the drop has no dependents and needs no CASCADE.
+-- =========================================================================
+
+do $$
 begin
-  update members set member = name where participant = norm;
-  get diagnostics n = row_count;
-  update beers set member = name where participant = norm;
-  return n;
-end;
-$$;
-grant execute on function register_display_name to anon, authenticated;
+  if exists (select 1 from information_schema.columns
+             where table_name = 'beers' and column_name = 'deleted_at') then
+    insert into deleted_beers (beer_number, poster, deleted_by, by_admin, deleted_at, wa_message_id)
+      select beer_number, member, coalesce(deleted_by_name, deleted_by), by_admin, deleted_at, wa_message_id
+      from beers where deleted_at is not null;
+    delete from beers where deleted_at is not null;
+    alter table beers
+      drop column deleted_at,
+      drop column deleted_by,
+      drop column deleted_by_name,
+      drop column by_admin;
+  end if;
+end $$;
