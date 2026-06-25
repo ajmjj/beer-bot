@@ -74,7 +74,8 @@ create table if not exists members (
   is_admin     boolean default false,
   member       text,               -- display name (auto from push_name / masked id)
   push_name    text,               -- WhatsApp display name (updated from live beers)
-  synced_at    timestamptz default now()
+  synced_at    timestamptz default now(),
+  left_at      timestamptz         -- soft delete: set when they leave the group, null = active
 );
 alter table members enable row level security;
 drop policy if exists "public read" on members;
@@ -84,6 +85,7 @@ grant select on members to anon, authenticated;
 -- Add columns to existing installs (safe no-ops if columns already exist).
 alter table members add column if not exists member    text;
 alter table members add column if not exists push_name text;
+alter table members add column if not exists left_at   timestamptz;
 -- phone was a redundant copy of participant, read by nothing — drop it.
 alter table members drop column if exists phone;
 
@@ -168,7 +170,7 @@ drop view if exists
 
 create or replace view totals as
   select count(*) total_beers,
-         (select count(*) from members) as members,
+         (select count(*) from members where left_at is null) as members,
          count(distinct beer_date) active_days
   from beers;
 
@@ -348,9 +350,11 @@ create or replace view v_participation as
 -- Group-wide stats that require knowing total membership (not just posters).
 create or replace view v_member_stats as
   with
-    total   as (select count(*)                        as total_members  from members),
-    posters as (select count(distinct participant)     as posting_members from beers where participant is not null),
-    bcnt    as (select count(*)                        as total_beers    from beers)
+    total   as (select count(*) as total_members  from members where left_at is null),
+    posters as (select count(*) as posting_members from members m
+                where m.left_at is null
+                  and exists (select 1 from beers b where b.participant = m.participant)),
+    bcnt    as (select count(*) as total_beers    from beers)
   select
     t.total_members::int,
     p.posting_members::int,

@@ -60,17 +60,32 @@ export async function handleBeerEdit(waMessageId, newBeerNumber, fields) {
 }
 
 // Sync current group members. participants: [{ participant: string, is_admin: boolean }]
+// Reconciles against the table: present members are (re)activated, anyone no
+// longer in the group is soft-deleted (left_at set). Beers and name resolution
+// are preserved — the row stays, just flagged.
 export async function syncMembers(participants) {
   if (!participants.length) return 0;
+  const now = new Date().toISOString();
+  const present = participants.map((p) => p.participant);
+
   const { error } = await supabase.from("members").upsert(
     participants.map((p) => ({
       participant: p.participant,
       is_admin: p.is_admin,
-      synced_at: new Date().toISOString(),
+      synced_at: now,
+      left_at: null, // present in group → active (also un-leaves anyone who rejoined)
     })),
     { onConflict: "participant" },
   );
   if (error) throw error;
+
+  // Soft-delete members who are no longer in the group.
+  const { error: leftErr } = await supabase.from("members")
+    .update({ left_at: now })
+    .is("left_at", null)
+    .not("participant", "in", `(${present.map((p) => `"${p}"`).join(",")})`);
+  if (leftErr) throw leftErr;
+
   return participants.length;
 }
 
