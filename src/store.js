@@ -95,6 +95,18 @@ export async function updateMemberPushName(participant, pushName) {
   await supabase.from("members").update({ push_name: pushName }).eq("participant", participant);
 }
 
+// Last N live beers (with wa_message_id) for startup audit.
+export async function getLastBeers(n = 10) {
+  const { data, error } = await supabase
+    .from("beers")
+    .select("beer_number, member, wa_message_id, ts")
+    .not("wa_message_id", "is", null)
+    .order("beer_number", { ascending: false })
+    .limit(n);
+  if (error) throw error;
+  return data ?? [];
+}
+
 // Best-effort display name for a phone number, from any beer that person has posted.
 export async function getMemberName(participant) {
   if (!participant) return null;
