@@ -68,9 +68,8 @@
     <nav id="tabs">
       <button data-tab="overview" class="active">Overview</button>
       <button data-tab="leaderboards">Leaderboards</button>
-      <button data-tab="trends">Trends</button>
+      <button data-tab="trends">Trends &amp; Forecast</button>
       <button data-tab="patterns">Patterns</button>
-      <button data-tab="forecast">Milestones &amp; Forecast</button>
     </nav>
 
     <!-- OVERVIEW -->
@@ -87,8 +86,6 @@
         <div class="card"><div class="v" id="avg">–</div><div class="l">Avg / day</div></div>
         <div class="card"><div class="v" id="week">–</div><div class="l">Last 7 days</div></div>
         <div class="card"><div class="v" id="highDay">–</div><div class="l">Best day</div><div class="s" id="highDayDate"></div></div>
-        <div class="card"><div class="v" id="lowDay">–</div><div class="l">Quietest day</div><div class="s" id="lowDayDate"></div></div>
-        <div class="card"><div class="v" id="pctPosting">–</div><div class="l">% posting</div></div>
         <div class="card"><div class="v" id="bpm">–</div><div class="l">Beers / member</div></div>
       </div>
     </div>
@@ -111,6 +108,8 @@
 
     <!-- TRENDS -->
     <div class="tab" id="trends">
+      <div class="cards" id="forecast-cards"></div>
+      <section class="box"><h2>Milestones</h2><table id="milestones"></table></section>
       <section class="box"><h2>Cumulative progress</h2><div class="chart-wrap"><canvas id="chart-cumulative"></canvas></div></section>
       <section class="box"><h2>Rolling 7-day total</h2><div class="chart-wrap"><canvas id="chart-rolling"></canvas></div></section>
       <div class="grid2">
@@ -126,12 +125,6 @@
         <table id="dow"></table>
       </section>
       <section class="box"><h2>By hour (Europe/Berlin)</h2><div class="heat" id="heatmap"></div></section>
-    </div>
-
-    <!-- MILESTONES & FORECAST -->
-    <div class="tab" id="forecast">
-      <div class="cards" id="forecast-cards"></div>
-      <section class="box"><h2>Milestones</h2><table id="milestones"></table></section>
     </div>
 
     <div class="foot" id="foot"></div>
