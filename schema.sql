@@ -267,6 +267,7 @@ create table if not exists members (
   synced_at    timestamptz default now()
 );
 alter table members enable row level security;
+drop policy if exists "public read" on members;
 create policy "public read" on members for select using (true);
 grant select on members to anon, authenticated;
 
