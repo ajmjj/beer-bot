@@ -102,9 +102,15 @@ create trigger members_default_name_trigger
   before insert or update on members
   for each row execute function members_default_name();
 
+-- SHELVED: self-service rename RPC. See .locals/username-feature-shelved.md
+-- The phone-number claim only matches the ~6 pn-addressed members (group is
+-- LID-addressed, so real phones are hidden for the rest). Commenting this out
+-- stops it being re-created on a fresh run; the already-applied DB function is
+-- left orphaned (harmless).
 -- RPC: sets member name in both members and beers so they stay in sync.
 -- security definer so it can update beers despite anon read-only RLS.
 -- Returns 1 if the phone matched a known group member, 0 if not found.
+/*
 create or replace function register_display_name(phone text, name text)
 returns int language plpgsql security definer as $$
 declare
@@ -118,6 +124,7 @@ begin
 end;
 $$;
 grant execute on function register_display_name to anon, authenticated;
+*/
 
 -- =========================================================================
 -- DATA MIGRATIONS  (idempotent; safe to re-run)
