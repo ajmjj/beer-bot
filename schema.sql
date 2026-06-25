@@ -177,7 +177,7 @@ create or replace view totals as
 -- over beers.member (snapshot at post time). Falls back to beers.member for backfill rows
 -- where participant is null or the member is no longer in the group.
 create or replace view leaderboard_alltime as
-  select b.member, count(*)::int as beers
+  select b.member, count(*)::int as beers, max(b.beer_date) as last_beer
   from beers b
   group by b.member
   order by beers desc;
