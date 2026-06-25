@@ -170,7 +170,6 @@ drop view if exists
 
 create or replace view totals as
   select count(*) total_beers,
-         (select count(*) from members where left_at is null) as members,
          count(distinct beer_date) active_days
   from beers;
 
@@ -178,12 +177,9 @@ create or replace view totals as
 -- over beers.member (snapshot at post time). Falls back to beers.member for backfill rows
 -- where participant is null or the member is no longer in the group.
 create or replace view leaderboard_alltime as
-  select coalesce(m.member, b.member) as member,
-         bool_or(m.is_admin) as is_admin,
-         count(*)::int as beers
+  select b.member, count(*)::int as beers
   from beers b
-  left join members m on m.participant = b.participant
-  group by coalesce(m.member, b.member)
+  group by b.member
   order by beers desc;
 
 create or replace view daily_counts as
@@ -260,22 +256,20 @@ create or replace view v_weekly as
 
 -- beers-per-active-day leaderboard
 create or replace view v_leaderboard_active as
-  select coalesce(m.member, b.member) as member,
+  select b.member,
          count(*)::int as beers,
          count(distinct b.beer_date)::int as active_days,
          round(count(*)::numeric / nullif(count(distinct b.beer_date), 0), 2) as per_active_day
   from beers b
-  left join members m on m.participant = b.participant
-  group by coalesce(m.member, b.member)
+  group by b.member
   order by per_active_day desc;
 
 -- biggest single day per person
 create or replace view v_biggest_day as
   with d as (
-    select coalesce(m.member, b.member) as member, b.beer_date, count(*) c
+    select b.member, b.beer_date, count(*) c
     from beers b
-    left join members m on m.participant = b.participant
-    group by coalesce(m.member, b.member), b.beer_date
+    group by b.member, b.beer_date
   )
   select distinct on (member) member, c::int as biggest_day, beer_date as date
   from d order by member, c desc, beer_date;
@@ -283,12 +277,11 @@ create or replace view v_biggest_day as
 -- best single week per person (sort desc in the frontend for the board)
 create or replace view v_highest_week as
   with w as (
-    select coalesce(m.member, b.member) as member,
+    select b.member,
            date_trunc('week', (b.ts at time zone 'Europe/Berlin'))::date wk,
            count(*) c
     from beers b
-    left join members m on m.participant = b.participant
-    group by coalesce(m.member, b.member), wk
+    group by b.member, wk
   )
   select distinct on (member) member, wk as week_start, c::int as beers
   from w order by member, c desc, wk;
@@ -349,19 +342,8 @@ create or replace view v_participation as
 
 -- Group-wide stats that require knowing total membership (not just posters).
 create or replace view v_member_stats as
-  with
-    total   as (select count(*) as total_members  from members where left_at is null),
-    posters as (select count(*) as posting_members from members m
-                where m.left_at is null
-                  and exists (select 1 from beers b where b.participant = m.participant)),
-    bcnt    as (select count(*) as total_beers    from beers)
-  select
-    t.total_members::int,
-    p.posting_members::int,
-    b.total_beers::int,
-    round(b.total_beers::numeric / nullif(t.total_members, 0), 1) as bpm,
-    round(p.posting_members::numeric / nullif(t.total_members, 0) * 100, 0)::int as pct_posting
-  from total t, posters p, bcnt b;
+  select count(distinct member)::int as posting_members
+  from beers;
 
 grant select on
   totals, leaderboard_alltime, daily_counts, day_extremes,
