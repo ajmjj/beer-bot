@@ -11,10 +11,6 @@ create table beers (
   raw_caption   text,
   source        text not null default 'live',   -- 'live' | 'export' | 'manual'
   wa_message_id text,                            -- WhatsApp message id (live only); maps deletions
-  deleted_at    timestamptz,                     -- soft-delete: excluded from counts when set
-  deleted_by    text,                            -- phone number that issued the delete-for-everyone
-  deleted_by_name text,                          -- display name of the deleter (admin name when by_admin)
-  by_admin      boolean,                         -- deleter != author and deleter is a group admin
   created_at    timestamptz default now(),
   unique (beer_number)                           -- DB-level dedup; first writer wins
 );
@@ -26,6 +22,43 @@ alter table beers enable row level security;
 create policy "public read" on beers for select using (true);
 
 -- =========================================================================
+-- DELETIONS  (hard delete: a revoked beer leaves beers and is logged here)
+-- Re-runnable. The DO block below migrates any legacy soft-deleted rows out
+-- of beers and drops the old soft-delete columns; it is a no-op once done.
+-- =========================================================================
+
+create table if not exists deleted_beers (
+  id            bigint generated always as identity primary key,
+  beer_number   integer not null,
+  poster        text not null,        -- display name of who posted it
+  deleted_by    text,                 -- who deleted it (= poster on self-delete; null if unknown)
+  by_admin      boolean,              -- deleter is a group admin and != poster
+  deleted_at    timestamptz not null default now(),
+  wa_message_id text
+);
+alter table deleted_beers enable row level security;
+drop policy if exists "public read" on deleted_beers;
+create policy "public read" on deleted_beers for select using (true);
+grant select on deleted_beers to anon, authenticated;
+
+-- One-time migration off the old soft-delete columns (guarded so re-runs are no-ops).
+do $$
+begin
+  if exists (select 1 from information_schema.columns
+             where table_name = 'beers' and column_name = 'deleted_at') then
+    insert into deleted_beers (beer_number, poster, deleted_by, by_admin, deleted_at, wa_message_id)
+      select beer_number, member, coalesce(deleted_by_name, deleted_by), by_admin, deleted_at, wa_message_id
+      from beers where deleted_at is not null;
+    delete from beers where deleted_at is not null;
+    alter table beers
+      drop column deleted_at,
+      drop column deleted_by,
+      drop column deleted_by_name,
+      drop column by_admin;
+  end if;
+end $$;
+
+-- =========================================================================
 -- DASHBOARD VIEWS  (re-runnable: create-or-replace + grant. Safe to paste
 -- this whole section into the SQL editor to update an existing database.)
 -- Time-pattern views use Europe/Berlin local time.
@@ -35,7 +68,7 @@ create or replace view totals as
   select count(*) total_beers,
          (select count(*) from members) as members,
          count(distinct beer_date) active_days
-  from beers where deleted_at is null;
+  from beers;
 
 -- Resolve member display name: prefer members.member (registered or auto-set from push_name)
 -- over beers.member (snapshot at post time). Falls back to beers.member for backfill rows
@@ -44,21 +77,15 @@ create or replace view leaderboard_alltime as
   select coalesce(m.member, b.member) as member, count(*)::int as beers
   from beers b
   left join members m on m.participant = b.participant
-  where b.deleted_at is null
   group by coalesce(m.member, b.member)
   order by beers desc;
 
 create or replace view daily_counts as
-  select beer_date, count(*) beers from beers where deleted_at is null group by beer_date order by beer_date;
-
--- delete-for-everyone log: a filtered window over beers (no separate table)
-create or replace view deleted_beers as
-  select beer_number, member, deleted_by, deleted_by_name, by_admin, deleted_at
-  from beers where deleted_at is not null order by deleted_at desc;
+  select beer_date, count(*) beers from beers group by beer_date order by beer_date;
 
 -- highest / lowest single day
 create or replace view day_extremes as
-  with d as (select beer_date, count(*) c from beers where deleted_at is null group by beer_date)
+  with d as (select beer_date, count(*) c from beers group by beer_date)
   select (select beer_date from d order by c desc, beer_date limit 1) as highest_date,
          (select max(c) from d) as highest,
          (select beer_date from d order by c asc,  beer_date limit 1) as lowest_date,
@@ -66,11 +93,11 @@ create or replace view day_extremes as
 
 -- daily series with cumulative + rolling-7-day (date spine fills empty days)
 create or replace view v_daily_series as
-  with bounds as (select min(beer_date) lo, max(beer_date) hi from beers where deleted_at is null),
+  with bounds as (select min(beer_date) lo, max(beer_date) hi from beers),
        days   as (select generate_series(lo, hi, interval '1 day')::date d from bounds),
        daily  as (
          select days.d, count(b.*) beers
-         from days left join beers b on b.beer_date = days.d and b.deleted_at is null
+         from days left join beers b on b.beer_date = days.d
          group by days.d
        )
   select d as beer_date,
@@ -85,7 +112,7 @@ create or replace view v_day_of_week as
     select (ts at time zone 'Europe/Berlin')::date d,
            extract(isodow from (ts at time zone 'Europe/Berlin'))::int dow,
            count(*) c
-    from beers where deleted_at is null group by 1, 2
+    from beers group by 1, 2
   )
   select dow,
          trim(to_char(date '2024-01-01' + (dow - 1), 'FMDay')) as day_name,
@@ -100,7 +127,7 @@ create or replace view v_hourly_matrix as
   select extract(hour   from (ts at time zone 'Europe/Berlin'))::int as hour,
          extract(isodow from (ts at time zone 'Europe/Berlin'))::int as dow,
          count(*)::int as beers
-  from beers where deleted_at is null group by 1, 2;
+  from beers group by 1, 2;
 
 -- monthly breakdown with rank
 create or replace view v_monthly as
@@ -108,7 +135,7 @@ create or replace view v_monthly as
     select date_trunc('month', (ts at time zone 'Europe/Berlin'))::date as month,
            count(*) c,
            count(distinct (ts at time zone 'Europe/Berlin')::date) as days
-    from beers where deleted_at is null group by 1
+    from beers group by 1
   )
   select month, c::int as total, days::int,
          round(c::numeric / nullif(days, 0), 1) as beer_per_day,
@@ -119,7 +146,7 @@ create or replace view v_monthly as
 create or replace view v_weekly as
   with w as (
     select date_trunc('week', (ts at time zone 'Europe/Berlin'))::date week_start, count(*) c
-    from beers where deleted_at is null group by 1
+    from beers group by 1
   )
   select week_start, (week_start + 6) as week_end, c::int as beers,
          rank() over (order by c desc) as rank
@@ -133,7 +160,6 @@ create or replace view v_leaderboard_active as
          round(count(*)::numeric / nullif(count(distinct b.beer_date), 0), 2) as per_active_day
   from beers b
   left join members m on m.participant = b.participant
-  where b.deleted_at is null
   group by coalesce(m.member, b.member)
   order by per_active_day desc;
 
@@ -143,7 +169,6 @@ create or replace view v_biggest_day as
     select coalesce(m.member, b.member) as member, b.beer_date, count(*) c
     from beers b
     left join members m on m.participant = b.participant
-    where b.deleted_at is null
     group by coalesce(m.member, b.member), b.beer_date
   )
   select distinct on (member) member, c::int as biggest_day, beer_date as date
@@ -157,7 +182,6 @@ create or replace view v_highest_week as
            count(*) c
     from beers b
     left join members m on m.participant = b.participant
-    where b.deleted_at is null
     group by coalesce(m.member, b.member), wk
   )
   select distinct on (member) member, wk as week_start, c::int as beers
@@ -166,10 +190,9 @@ create or replace view v_highest_week as
 -- milestones: who posted the Nth beer, and how long it took
 create or replace view v_milestones as
   select b.beer_number as milestone, b.member, b.beer_date as date,
-         (b.beer_date - (select min(beer_date) from beers where deleted_at is null)) as days_to_reach
+         (b.beer_date - (select min(beer_date) from beers)) as days_to_reach
   from beers b
-  where b.deleted_at is null
-    and b.beer_number in (100,500,1000,2000,5000,10000,25000,50000,100000,150000,200000,
+  where b.beer_number in (100,500,1000,2000,5000,10000,25000,50000,100000,150000,200000,
                           250000,300000,400000,500000,600000,700000,750000,800000,900000,1000000)
   order by b.beer_number;
 
@@ -179,7 +202,7 @@ create or replace view v_forecast as
     select beer_date,
            extract(epoch from beer_date) / 86400 as day_num,
            sum(count(*)) over (order by beer_date) as cum
-    from beers where deleted_at is null group by beer_date
+    from beers group by beer_date
   ),
   fit as (
     select regr_slope(cum, day_num) slope, regr_intercept(cum, day_num) intercept,
@@ -199,18 +222,18 @@ create or replace view v_forecast as
          (f.last_date + ((1000000 - f.current_total) / nullif(t.rate30, 0))::int) as trailing_1m_date
   from fit f, trail t;
 
--- admin-deleting leaderboard (live-tracked deletions only)
+-- admin-deleting leaderboard (from the deletion log)
 create or replace view v_admin_deletes as
-  select coalesce(deleted_by_name, deleted_by, 'unknown') as deleter,
+  select coalesce(deleted_by, 'unknown') as deleter,
          count(*)::int as deletes,
          count(*) filter (where by_admin)::int as admin_deletes,
          count(*) filter (where by_admin is not true)::int as own_deletes
-  from beers where deleted_at is not null
+  from deleted_beers
   group by 1 order by deletes desc;
 
 -- participation summary
 create or replace view v_participation as
-  with lb as (select member, count(*) c from beers where deleted_at is null group by member),
+  with lb as (select member, count(*) c from beers group by member),
        t  as (select sum(c) total, count(*) people from lb),
        top10 as (select sum(c) s from (select c from lb order by c desc limit 10) x)
   select t.total::int as total_beers, t.people::int as people_posted,
@@ -219,7 +242,7 @@ create or replace view v_participation as
   from t, top10;
 
 grant select on
-  totals, leaderboard_alltime, daily_counts, deleted_beers, day_extremes,
+  totals, leaderboard_alltime, daily_counts, day_extremes,
   v_daily_series, v_day_of_week, v_hourly_matrix, v_monthly, v_weekly,
   v_leaderboard_active, v_biggest_day, v_highest_week, v_milestones,
   v_forecast, v_admin_deletes, v_participation
@@ -245,38 +268,6 @@ $$;
 -- One-time migration: mask any phone numbers already stored in member.
 -- Safe to re-run: mask_phone is idempotent on already-masked values.
 update beers set member = mask_phone(member) where member != mask_phone(member);
-
--- Self-service display name registration.
-create table if not exists member_names (
-  participant  text primary key,
-  display_name text not null,
-  updated_at   timestamptz default now()
-);
-alter table member_names enable row level security;
-create policy "public read"   on member_names for select using (true);
-create policy "public insert" on member_names for insert with check (true);
-create policy "public update" on member_names for update using (true);
-grant select, insert, update on member_names to anon, authenticated;
-
--- RPC: normalise phone, upsert into member_names, update beers.member in place.
--- security definer so it can update beers despite anon read-only RLS.
--- Returns number of beer rows updated.
-create or replace function register_display_name(phone text, name text)
-returns int language plpgsql security definer as $$
-declare
-  norm text := regexp_replace(phone, '[^0-9]', '', 'g');
-  n    int;
-begin
-  insert into member_names(participant, display_name)
-  values (norm, name)
-  on conflict (participant) do update set display_name = name, updated_at = now();
-
-  update beers set member = name where participant = norm;
-  get diagnostics n = row_count;
-  return n;
-end;
-$$;
-grant execute on function register_display_name to anon, authenticated;
 
 -- =========================================================================
 -- MEMBERSHIP  (re-runnable)
@@ -332,8 +323,8 @@ update members set member = coalesce(push_name, mask_phone(participant)) where m
 create or replace view v_member_stats as
   with
     total   as (select count(*)                        as total_members  from members),
-    posters as (select count(distinct participant)     as posting_members from beers where deleted_at is null and participant is not null),
-    bcnt    as (select count(*)                        as total_beers    from beers where deleted_at is null)
+    posters as (select count(distinct participant)     as posting_members from beers where participant is not null),
+    bcnt    as (select count(*)                        as total_beers    from beers)
   select
     t.total_members::int,
     p.posting_members::int,
@@ -350,7 +341,7 @@ create or replace view v_members as
     count(b.id)::int as beers_posted,
     max(b.ts)        as last_beer_at
   from members m
-  left join beers b on b.participant = m.participant and b.deleted_at is null
+  left join beers b on b.participant = m.participant
   group by m.participant, m.member, m.push_name, m.is_admin
   order by beers_posted desc;
 
