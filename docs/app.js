@@ -70,8 +70,8 @@ async function loadLeaderboards() {
   // top performers with show-all toggle
   let expanded = false;
   const drawBoard = () => {
-    const rows = (expanded ? board : board.slice(0, 20)).map((r, i) => [{ v: i + 1, cls: "rank" }, esc(r.member), { v: fmt(r.beers), cls: "beers" }]);
-    table("board", null, rows);
+    const rows = (expanded ? board : board.slice(0, 20)).map((r, i) => [{ v: i + 1, cls: "rank" }, esc(r.member), { v: fmt(r.beers), cls: "beers" }, { v: fmtDate(r.last_beer), cls: "num" }]);
+    table("board", [{ label: "#", num: true }, { label: "Member" }, { label: "Beers", num: true }, { label: "Last beer", num: true }], rows);
   };
   drawBoard();
   const btn = $("toggle");
