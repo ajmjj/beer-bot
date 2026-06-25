@@ -40,12 +40,12 @@ const AMBER = "#f5a623";
 async function loadOverview() {
   const [[t], [d], series, [mstat]] = await Promise.all([view("totals"), view("day_extremes"), view("v_daily_series", "&order=beer_date.asc"), view("v_member_stats")]);
   $("total").textContent = fmt(t.total_beers);
-  $("members").textContent = fmt(t.members);
+  $("members").textContent = fmt(mstat?.posting_members);
+  $("lurkers").textContent = fmt(mstat ? mstat.total_members - mstat.posting_members : null);
   $("days").textContent = fmt(t.active_days);
   $("avg").textContent = t.active_days ? (t.total_beers / t.active_days).toFixed(1) : "0";
   $("week").textContent = fmt(series.length ? series[series.length - 1].rolling_7d : 0);
   $("highDay").textContent = fmt(d.highest); $("highDayDate").textContent = fmtDate(d.highest_date);
-  $("bpm").textContent = fmt(mstat?.bpm);
   const pct = (t.total_beers / GOAL) * 100;
   $("bar").style.width = `${Math.min(100, Math.max(pct, 0.3))}%`;
   $("pct").textContent = `${pct.toFixed(4)}% · ${fmt(GOAL - t.total_beers)} to go`;
