@@ -9,7 +9,7 @@ import makeWASocket, {
 import pino from "pino";
 import qrcode from "qrcode-terminal";
 import { parseBeer } from "./parser.js";
-import { insertBeers, markBeerDeleted, getMemberName, handleBeerEdit } from "./store.js";
+import { insertBeers, markBeerDeleted, getMemberName, handleBeerEdit, syncMembers } from "./store.js";
 
 const REVOKE = proto.Message.ProtocolMessage.Type.REVOKE;
 const MESSAGE_EDIT = proto.Message.ProtocolMessage.Type.MESSAGE_EDIT;
@@ -55,6 +55,12 @@ async function start() {
     }
     if (connection === "open") {
       console.log("connected" + (GROUP_JID ? `, watching ${GROUP_JID}` : ", no GROUP_JID set — logging group JIDs below"));
+      if (GROUP_JID) {
+        sock.groupMetadata(GROUP_JID).then((meta) => {
+          const participants = meta.participants.map((p) => ({ participant: num(p.id), is_admin: !!p.admin }));
+          return syncMembers(participants);
+        }).then((n) => console.log(`synced ${n} members`)).catch((e) => console.error("member sync failed:", e.message));
+      }
     }
     if (connection === "close") {
       const code = lastDisconnect?.error?.output?.statusCode;
