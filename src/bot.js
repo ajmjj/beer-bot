@@ -9,13 +9,14 @@ import makeWASocket, {
 import pino from "pino";
 import qrcode from "qrcode-terminal";
 import { parseBeer } from "./parser.js";
-import { insertBeers, markBeerDeleted, getMemberName, handleBeerEdit, getLastBeers } from "./store.js";
+import { insertBeers, markBeerDeleted, getMemberName, handleBeerEdit, getLastBeers, getMaxBeerNumber } from "./store.js";
 
 const REVOKE = proto.Message.ProtocolMessage.Type.REVOKE;
 const MESSAGE_EDIT = proto.Message.ProtocolMessage.Type.MESSAGE_EDIT;
 const num = (jid) => (jid ? jid.split("@")[0].split(":")[0] : null); // jid -> bare number
 
 const GROUP_JID = process.env.GROUP_JID || null;
+const MAX_SKIP = 5; // reject beer numbers more than this far ahead of current max
 const PAIR_NUMBER = process.env.PAIR_NUMBER || null; // optional: e.g. 491701234567 for pairing-code login
 const logger = pino({ level: process.env.LOG_LEVEL || "warn" });
 
@@ -198,6 +199,11 @@ async function start() {
       const member = msg.pushName || num(msg.key.participant) || "unknown";
       if (beer_number === null) {
         if (text.trim()) console.log(`skipped: ${member}: ${JSON.stringify(text.slice(0, 60))}`);
+        continue;
+      }
+      const maxKnown = await getMaxBeerNumber();
+      if (beer_number > maxKnown + MAX_SKIP) {
+        console.warn(`[skip] beer #${beer_number} by ${member} too far ahead of #${maxKnown}, ignoring`);
         continue;
       }
       try {
