@@ -7,12 +7,19 @@ const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SEC
   auth: { persistSession: false },
 });
 
-const { data, error } = await supabase
-  .from("beers")
-  .select("beer_number, member, ts")
-  .order("beer_number", { ascending: true });
-
-if (error) { console.error(error.message); process.exit(1); }
+// Paginate: Supabase caps a single select at 1000 rows, which silently hid
+// every gap above the 1000th beer once the table grew past that.
+const data = [];
+for (let from = 0; ; from += 1000) {
+  const { data: page, error } = await supabase
+    .from("beers")
+    .select("beer_number, member, ts")
+    .order("beer_number", { ascending: true })
+    .range(from, from + 999);
+  if (error) { console.error(error.message); process.exit(1); }
+  data.push(...page);
+  if (page.length < 1000) break;
+}
 
 console.log(`Total beers: ${data.length}\n`);
 

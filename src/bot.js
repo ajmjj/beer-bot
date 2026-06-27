@@ -9,6 +9,8 @@ import makeWASocket, {
 import pino from "pino";
 import qrcode from "qrcode-terminal";
 import { parseBeer } from "./parser.js";
+import { guardDecision } from "./guard.js";
+import { acquireSessionLock } from "./session-lock.js";
 import { insertBeers, markBeerDeleted, getMemberName, handleBeerEdit, getLastBeers, getMaxBeerNumber } from "./store.js";
 
 const REVOKE = proto.Message.ProtocolMessage.Type.REVOKE;
@@ -62,6 +64,10 @@ async function start() {
   let resolveAudit;
   let startupAuditPromise = new Promise((r) => { resolveAudit = r; });
 
+  // A beer number that ran ahead of the known max, held until a second nearby beer confirms
+  // it's a real jump (offline gap) rather than a typo. Reset each connection.
+  let pendingHigh = null;
+
   // On reconnect, compare the last 10 tracked beers against WhatsApp history:
   // catch offline deletions/edits and insert any new beers we missed.
   sock.ev.on("messaging-history.set", async ({ messages, isLatest }) => {
@@ -88,6 +94,20 @@ async function start() {
           } catch (err) {
             console.error("[startup] edit correction failed:", err.message);
           }
+        }
+      }
+
+      // Catch edits of previously-skipped messages (original was never in DB).
+      const protoMsg = msg.message?.protocolMessage;
+      if (protoMsg?.type === MESSAGE_EDIT && !audit.pending.has(id)) {
+        const editText = messageText(protoMsg.editedMessage);
+        const editNum = parseBeer(editText);
+        if (editNum !== null) {
+          const member = msg.pushName || num(msg.key.participant) || "unknown";
+          try {
+            const n = await insertBeers([{ beer_number: editNum, member, push_name: msg.pushName ?? null, participant: num(msg.key.participant), ts: new Date(msgTs), raw_caption: editText, source: "live", wa_message_id: id }]);
+            if (n) console.log(`[startup] gap-fill from edit: beer #${editNum} by ${member}`);
+          } catch (err) { console.error(`[startup] gap-fill edit failed #${editNum}:`, err.message); }
         }
       }
 
@@ -188,9 +208,10 @@ async function start() {
         continue;
       }
 
-      // Message edit: re-parse the new content and update/delete accordingly.
+      // Message edit (rarely arrives via upsert; main path is the messages.update handler below).
       if (msg.message?.protocolMessage?.type === MESSAGE_EDIT) {
-        await handleEdit(msg);
+        const p = msg.message.protocolMessage;
+        await handleEdit(p.key?.id, messageText(p.editedMessage), new Date(Number(msg.messageTimestamp) * 1000), msg.pushName, num(msg.key.participant));
         continue;
       }
 
@@ -201,49 +222,74 @@ async function start() {
         if (text.trim()) console.log(`skipped: ${member}: ${JSON.stringify(text.slice(0, 60))}`);
         continue;
       }
+      const entry = {
+        beer_number,
+        member,
+        push_name: msg.pushName ?? null,
+        participant: num(msg.key.participant),
+        ts: new Date(Number(msg.messageTimestamp) * 1000),
+        raw_caption: text,
+        source: "live",
+        wa_message_id: msg.key.id,
+      };
+
       const maxKnown = await getMaxBeerNumber();
-      if (beer_number > maxKnown + MAX_SKIP) {
-        console.warn(`[skip] beer #${beer_number} by ${member} too far ahead of #${maxKnown}, ignoring`);
+      // ponytail: a lone typo runs ahead once; a real offline jump is confirmed by the next nearby beer.
+      // Ceiling: two typos within MAX_SKIP of each other could slip through — tighten to N confirmations if it bites.
+      const decision = guardDecision(beer_number, maxKnown, pendingHigh, MAX_SKIP);
+      if (decision === "hold") {
+        pendingHigh = entry;
+        console.warn(`[hold] beer #${beer_number} by ${member} ran ahead of #${maxKnown}; awaiting confirmation`);
         continue;
       }
+      if (decision === "confirm") {
+        try {
+          await insertBeers([pendingHigh]);
+          console.log(`[unstick] confirmed jump to #${pendingHigh.beer_number}, resuming live counting`);
+        } catch (err) {
+          console.error(`unstick insert failed for #${pendingHigh.beer_number}:`, err.message);
+        }
+      }
+      pendingHigh = null;
+
       try {
-        const inserted = await insertBeers([{
-          beer_number,
-          member,
-          push_name: msg.pushName ?? null,
-          participant: num(msg.key.participant),
-          ts: new Date(Number(msg.messageTimestamp) * 1000),
-          raw_caption: text,
-          source: "live",
-          wa_message_id: msg.key.id,
-        }]);
+        const inserted = await insertBeers([entry]);
         console.log(inserted ? `${catchup ? "[catchup] " : ""}beer #${beer_number} by ${member}` : `dup #${beer_number} (ignored)`);
       } catch (err) {
         console.error(`write failed for #${beer_number}:`, err.message);
       }
     }
   });
+
+  // Live message edits arrive here, NOT on messages.upsert — Baileys routes MESSAGE_EDIT
+  // to messages.update with the new content under update.message.editedMessage.
+  sock.ev.on("messages.update", async (updates) => {
+    for (const u of updates) {
+      if (u.key?.remoteJid !== GROUP_JID) continue;
+      const edited = u.update?.message?.editedMessage?.message;
+      if (!edited) continue; // status/receipt update, not an edit
+      const ts = new Date(Number(u.update.messageTimestamp || Math.floor(Date.now() / 1000)) * 1000);
+      await handleEdit(u.key.id, messageText(edited), ts, u.pushName, num(u.key.participant));
+    }
+  });
 }
 
-async function handleEdit(msg) {
-  const proto = msg.message.protocolMessage;
-  const originalId = proto.key?.id;
+// originalId: id of the edited message. Only updates the fields an edit changes —
+// pushName is usually absent on edit events, so we don't pass it (would clobber the
+// stored poster name); identity is preserved unless we're inserting a fresh row.
+async function handleEdit(originalId, newText, ts, pushName, participant) {
   if (!originalId) return;
-
-  const newText = messageText(proto.editedMessage);
   const beer_number = parseBeer(newText);
-  const member = msg.pushName || num(msg.key.participant) || "unknown";
+
+  const fields = { raw_caption: newText, ts };
+  if (pushName) { fields.member = pushName; fields.push_name = pushName; }
+  if (participant) fields.participant = participant;
 
   try {
-    const result = await handleBeerEdit(originalId, beer_number, {
-      member,
-      push_name: msg.pushName ?? null,
-      participant: num(msg.key.participant),
-      raw_caption: newText,
-    });
+    const result = await handleBeerEdit(originalId, beer_number, fields);
     if (result.action === "deleted") console.log(`edit→non-number: hard deleted beer #${result.beer?.beer_number} (${result.beer?.member})`);
-    else if (result.action === "updated") console.log(`edit: beer #${result.beer?.beer_number} updated by ${member}`);
-    else if (result.action === "inserted") console.log(`edit→new: beer #${beer_number} by ${member}`);
+    else if (result.action === "updated") console.log(`edit: message ${originalId} → beer #${beer_number}`);
+    else if (result.action === "inserted") console.log(`edit→new: beer #${beer_number}`);
     else console.log(`edit for untracked message ${originalId} — ignored`);
   } catch (err) {
     console.error("edit handling failed:", err.message);
@@ -284,4 +330,5 @@ async function handleDeletion(sock, msg) {
   }
 }
 
+acquireSessionLock(); // refuse to start if another process holds the WhatsApp session
 start();

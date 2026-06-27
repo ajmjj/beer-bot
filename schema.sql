@@ -173,13 +173,22 @@ create or replace view totals as
          count(distinct beer_date) active_days
   from beers;
 
--- Resolve member display name: prefer members.member (registered or auto-set from push_name)
--- over beers.member (snapshot at post time). Falls back to beers.member for backfill rows
--- where participant is null or the member is no longer in the group.
+-- Stable per-person identity: participant id when known (live beers), else the
+-- display name (legacy export rows have null participant). Carries the person's
+-- most recent display name. Every per-person leaderboard groups on `pid` so two
+-- different people who happen to share a display name are not merged.
+create or replace view v_identity as
+  select distinct on (coalesce(participant, member))
+         coalesce(participant, member) as pid,
+         member
+  from beers
+  order by coalesce(participant, member), ts desc;
+
 create or replace view leaderboard_alltime as
-  select b.member, count(*)::int as beers, max(b.beer_date) as last_beer
+  select i.member, count(*)::int as beers, max(b.beer_date) as last_beer
   from beers b
-  group by b.member
+  join v_identity i on i.pid = coalesce(b.participant, b.member)
+  group by i.pid, i.member
   order by beers desc;
 
 create or replace view v_gaps as
@@ -266,35 +275,38 @@ create or replace view v_weekly as
 
 -- beers-per-active-day leaderboard
 create or replace view v_leaderboard_active as
-  select b.member,
+  select i.member,
          count(*)::int as beers,
          count(distinct b.beer_date)::int as active_days,
          round(count(*)::numeric / nullif(count(distinct b.beer_date), 0), 2) as per_active_day
   from beers b
-  group by b.member
+  join v_identity i on i.pid = coalesce(b.participant, b.member)
+  group by i.pid, i.member
   order by per_active_day desc;
 
 -- biggest single day per person
 create or replace view v_biggest_day as
   with d as (
-    select b.member, b.beer_date, count(*) c
+    select coalesce(b.participant, b.member) as pid, b.beer_date, count(*) c
     from beers b
-    group by b.member, b.beer_date
+    group by coalesce(b.participant, b.member), b.beer_date
   )
-  select distinct on (member) member, c::int as biggest_day, beer_date as date
-  from d order by member, c desc, beer_date;
+  select distinct on (d.pid) i.member, d.c::int as biggest_day, d.beer_date as date
+  from d join v_identity i on i.pid = d.pid
+  order by d.pid, d.c desc, d.beer_date;
 
 -- best single week per person (sort desc in the frontend for the board)
 create or replace view v_highest_week as
   with w as (
-    select b.member,
+    select coalesce(b.participant, b.member) as pid,
            date_trunc('week', (b.ts at time zone 'Europe/Berlin'))::date wk,
            count(*) c
     from beers b
-    group by b.member, wk
+    group by coalesce(b.participant, b.member), wk
   )
-  select distinct on (member) member, wk as week_start, c::int as beers
-  from w order by member, c desc, wk;
+  select distinct on (w.pid) i.member, w.wk as week_start, w.c::int as beers
+  from w join v_identity i on i.pid = w.pid
+  order by w.pid, w.c desc, w.wk;
 
 -- milestones: who posted the Nth beer, and how long it took
 create or replace view v_milestones as
@@ -342,7 +354,7 @@ create or replace view v_admin_deletes as
 
 -- participation summary
 create or replace view v_participation as
-  with lb as (select member, count(*) c from beers group by member),
+  with lb as (select coalesce(participant, member) as pid, count(*) c from beers group by 1),
        t  as (select sum(c) total, count(*) people from lb),
        top10 as (select sum(c) s from (select c from lb order by c desc limit 10) x)
   select t.total::int as total_beers, t.people::int as people_posted,
@@ -352,11 +364,11 @@ create or replace view v_participation as
 
 -- Group-wide stats that require knowing total membership (not just posters).
 create or replace view v_member_stats as
-  select count(distinct member)::int as posting_members
+  select count(distinct coalesce(participant, member))::int as posting_members
   from beers;
 
 grant select on
-  totals, leaderboard_alltime, daily_counts, day_extremes,
+  totals, v_identity, leaderboard_alltime, daily_counts, day_extremes,
   v_daily_series, v_day_of_week, v_hourly_matrix, v_monthly, v_weekly,
   v_leaderboard_active, v_biggest_day, v_highest_week, v_milestones,
   v_forecast, v_admin_deletes, v_participation,

@@ -14,3 +14,11 @@ chat_exports/*
 
 # Local planning notes — keep out of the repo
 .claude/
+
+# WhatsApp session lock + any moved-aside session backups — runtime only, never commit
+.baileys_auth.lock
+.baileys_auth.*/
+.baileys_auth.*/app-state-sync*
+pre-key-*.json
+sender-key-*.json
+session-*.json
