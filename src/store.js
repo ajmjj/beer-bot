@@ -96,6 +96,11 @@ export async function updateMemberPushName(participant, pushName) {
 }
 
 // Last N live beers (with wa_message_id) for startup audit.
+export async function getMaxBeerNumber() {
+  const { data } = await supabase.from("beers").select("beer_number").order("beer_number", { ascending: false }).limit(1);
+  return data?.[0]?.beer_number ?? 0;
+}
+
 export async function getLastBeers(n = 10) {
   const { data, error } = await supabase
     .from("beers")

@@ -182,6 +182,16 @@ create or replace view leaderboard_alltime as
   group by b.member
   order by beers desc;
 
+create or replace view v_gaps as
+  with seq as (
+    select generate_series(min(beer_number), max(beer_number))::int as n from beers
+  ),
+  missing as (
+    select s.n from seq s left join beers b on b.beer_number = s.n where b.beer_number is null
+  )
+  select count(*)::int as total_missing, array_agg(n order by n) as missing_numbers
+  from missing;
+
 create or replace view daily_counts as
   select beer_date, count(*) beers from beers group by beer_date order by beer_date;
 
