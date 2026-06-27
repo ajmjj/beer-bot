@@ -49,6 +49,7 @@ async function loadOverview() {
   const pct = (total / GOAL) * 100;
   $("bar").style.width = `${Math.min(100, Math.max(pct, 0.3))}%`;
   $("pct").textContent = `${pct.toFixed(4)}% · ${fmt(GOAL - total)} to go`;
+  if (gaps?.total_missing > 0) $("missed").textContent = fmt(gaps.total_missing);
 }
 
 async function loadLeaderboards() {
