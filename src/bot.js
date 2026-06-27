@@ -9,6 +9,7 @@ import makeWASocket, {
 import pino from "pino";
 import qrcode from "qrcode-terminal";
 import { parseBeer } from "./parser.js";
+import { guardDecision } from "./guard.js";
 import { acquireSessionLock } from "./session-lock.js";
 import { insertBeers, markBeerDeleted, getMemberName, handleBeerEdit, getLastBeers, getMaxBeerNumber } from "./store.js";
 
@@ -62,6 +63,10 @@ async function start() {
   // Resolved when connection opens; the history handler awaits it to avoid a race.
   let resolveAudit;
   let startupAuditPromise = new Promise((r) => { resolveAudit = r; });
+
+  // A beer number that ran ahead of the known max, held until a second nearby beer confirms
+  // it's a real jump (offline gap) rather than a typo. Reset each connection.
+  let pendingHigh = null;
 
   // On reconnect, compare the last 10 tracked beers against WhatsApp history:
   // catch offline deletions/edits and insert any new beers we missed.
@@ -202,22 +207,38 @@ async function start() {
         if (text.trim()) console.log(`skipped: ${member}: ${JSON.stringify(text.slice(0, 60))}`);
         continue;
       }
+      const entry = {
+        beer_number,
+        member,
+        push_name: msg.pushName ?? null,
+        participant: num(msg.key.participant),
+        ts: new Date(Number(msg.messageTimestamp) * 1000),
+        raw_caption: text,
+        source: "live",
+        wa_message_id: msg.key.id,
+      };
+
       const maxKnown = await getMaxBeerNumber();
-      if (beer_number > maxKnown + MAX_SKIP) {
-        console.warn(`[skip] beer #${beer_number} by ${member} too far ahead of #${maxKnown}, ignoring`);
+      // ponytail: a lone typo runs ahead once; a real offline jump is confirmed by the next nearby beer.
+      // Ceiling: two typos within MAX_SKIP of each other could slip through — tighten to N confirmations if it bites.
+      const decision = guardDecision(beer_number, maxKnown, pendingHigh, MAX_SKIP);
+      if (decision === "hold") {
+        pendingHigh = entry;
+        console.warn(`[hold] beer #${beer_number} by ${member} ran ahead of #${maxKnown}; awaiting confirmation`);
         continue;
       }
+      if (decision === "confirm") {
+        try {
+          await insertBeers([pendingHigh]);
+          console.log(`[unstick] confirmed jump to #${pendingHigh.beer_number}, resuming live counting`);
+        } catch (err) {
+          console.error(`unstick insert failed for #${pendingHigh.beer_number}:`, err.message);
+        }
+      }
+      pendingHigh = null;
+
       try {
-        const inserted = await insertBeers([{
-          beer_number,
-          member,
-          push_name: msg.pushName ?? null,
-          participant: num(msg.key.participant),
-          ts: new Date(Number(msg.messageTimestamp) * 1000),
-          raw_caption: text,
-          source: "live",
-          wa_message_id: msg.key.id,
-        }]);
+        const inserted = await insertBeers([entry]);
         console.log(inserted ? `${catchup ? "[catchup] " : ""}beer #${beer_number} by ${member}` : `dup #${beer_number} (ignored)`);
       } catch (err) {
         console.error(`write failed for #${beer_number}:`, err.message);
