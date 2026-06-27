@@ -39,17 +39,16 @@ const AMBER = "#f5a623";
 // ---------- loaders (run once per tab) ----------
 async function loadOverview() {
   const [[t], [d], series, [mstat], [gaps]] = await Promise.all([view("totals"), view("day_extremes"), view("v_daily_series", "&order=beer_date.asc"), view("v_member_stats"), view("v_gaps")]);
-  $("total").textContent = fmt(t.total_beers);
+  const total = t.total_beers + (gaps?.total_missing ?? 0); // skipped numbers count toward the tally
+  $("total").textContent = fmt(total);
   $("members").textContent = fmt(mstat?.posting_members);
   $("days").textContent = fmt(t.active_days);
   $("avg").textContent = t.active_days ? (t.total_beers / t.active_days).toFixed(1) : "0";
   $("week").textContent = fmt(series.length ? series[series.length - 1].rolling_7d : 0);
   $("highDay").textContent = fmt(d.highest); $("highDayDate").textContent = fmtDate(d.highest_date);
-  const pct = (t.total_beers / GOAL) * 100;
+  const pct = (total / GOAL) * 100;
   $("bar").style.width = `${Math.min(100, Math.max(pct, 0.3))}%`;
-  $("pct").textContent = `${pct.toFixed(4)}% · ${fmt(GOAL - t.total_beers)} to go`;
-
-  if (gaps?.total_missing > 0) $("missed").textContent = fmt(gaps.total_missing);
+  $("pct").textContent = `${pct.toFixed(4)}% · ${fmt(GOAL - total)} to go`;
 }
 
 async function loadLeaderboards() {
@@ -92,9 +91,10 @@ async function loadLeaderboards() {
   table("board-bigday", [{ label: "Member" }, { label: "Beers", num: true }, { label: "Date", num: true }],
     [...bigday].sort((a, b) => b.biggest_day - a.biggest_day).slice(0, 10).map((r) => [esc(r.member), { v: fmt(r.biggest_day), cls: "beers" }, { v: fmtDate(r.date), cls: "num" }]));
 
-  if (deletes.length) {
-    table("admin-deletes", [{ label: "Deleter" }, { label: "Deletes", num: true }, { label: "By admin", num: true }],
-      deletes.map((r) => [esc(r.deleter), { v: fmt(r.deletes), cls: "num beers" }, { v: fmt(r.admin_deletes), cls: "num" }]));
+  const adminDeletes = deletes.filter((r) => r.admin_deletes > 0);
+  if (adminDeletes.length) {
+    table("admin-deletes", [{ label: "Deleter" }, { label: "Deletes", num: true }],
+      adminDeletes.map((r) => [esc(r.deleter), { v: fmt(r.admin_deletes), cls: "num beers" }]));
   } else {
     $("admin-deletes").innerHTML = `<tr><td style="color:var(--muted)">No deletions tracked yet.</td></tr>`;
   }
