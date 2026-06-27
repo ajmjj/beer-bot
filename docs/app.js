@@ -86,7 +86,7 @@ async function loadLeaderboards() {
     active.slice(0, 10).map((r) => [esc(r.member), { v: r.per_active_day, cls: "num beers" }, { v: fmt(r.beers), cls: "num" }]));
 
   const isoWeek = (s) => { const d = new Date(s); d.setUTCDate(d.getUTCDate() + 4 - (d.getUTCDay() || 7)); return Math.ceil(((d - new Date(Date.UTC(d.getUTCFullYear(), 0, 1))) / 86400000 + 1) / 7); };
-  table("board-week", [{ label: "Member" }, { label: "Beers", num: true }, { label: "CW", num: true }],
+  table("board-week", [{ label: "Member" }, { label: "Beers", num: true }, { label: "Week", num: true }],
     [...week].sort((a, b) => b.beers - a.beers).slice(0, 10).map((r) => [esc(r.member), { v: fmt(r.beers), cls: "beers" }, { v: `CW ${isoWeek(r.week_start)}`, cls: "num" }]));
 
   table("board-bigday", [{ label: "Member" }, { label: "Beers", num: true }, { label: "Date", num: true }],
