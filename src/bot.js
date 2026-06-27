@@ -97,6 +97,20 @@ async function start() {
         }
       }
 
+      // Catch edits of previously-skipped messages (original was never in DB).
+      const protoMsg = msg.message?.protocolMessage;
+      if (protoMsg?.type === MESSAGE_EDIT && !audit.pending.has(id)) {
+        const editText = messageText(protoMsg.editedMessage);
+        const editNum = parseBeer(editText);
+        if (editNum !== null) {
+          const member = msg.pushName || num(msg.key.participant) || "unknown";
+          try {
+            const n = await insertBeers([{ beer_number: editNum, member, push_name: msg.pushName ?? null, participant: num(msg.key.participant), ts: new Date(msgTs), raw_caption: editText, source: "live", wa_message_id: id }]);
+            if (n) console.log(`[startup] gap-fill from edit: beer #${editNum} by ${member}`);
+          } catch (err) { console.error(`[startup] gap-fill edit failed #${editNum}:`, err.message); }
+        }
+      }
+
       // Insert beers that arrived while we were offline.
       const text = messageText(msg.message);
       const beerNum = parseBeer(text);
@@ -194,9 +208,10 @@ async function start() {
         continue;
       }
 
-      // Message edit: re-parse the new content and update/delete accordingly.
+      // Message edit (rarely arrives via upsert; main path is the messages.update handler below).
       if (msg.message?.protocolMessage?.type === MESSAGE_EDIT) {
-        await handleEdit(msg);
+        const p = msg.message.protocolMessage;
+        await handleEdit(p.key?.id, messageText(p.editedMessage), new Date(Number(msg.messageTimestamp) * 1000), msg.pushName, num(msg.key.participant));
         continue;
       }
 
@@ -245,27 +260,36 @@ async function start() {
       }
     }
   });
+
+  // Live message edits arrive here, NOT on messages.upsert — Baileys routes MESSAGE_EDIT
+  // to messages.update with the new content under update.message.editedMessage.
+  sock.ev.on("messages.update", async (updates) => {
+    for (const u of updates) {
+      if (u.key?.remoteJid !== GROUP_JID) continue;
+      const edited = u.update?.message?.editedMessage?.message;
+      if (!edited) continue; // status/receipt update, not an edit
+      const ts = new Date(Number(u.update.messageTimestamp || Math.floor(Date.now() / 1000)) * 1000);
+      await handleEdit(u.key.id, messageText(edited), ts, u.pushName, num(u.key.participant));
+    }
+  });
 }
 
-async function handleEdit(msg) {
-  const proto = msg.message.protocolMessage;
-  const originalId = proto.key?.id;
+// originalId: id of the edited message. Only updates the fields an edit changes —
+// pushName is usually absent on edit events, so we don't pass it (would clobber the
+// stored poster name); identity is preserved unless we're inserting a fresh row.
+async function handleEdit(originalId, newText, ts, pushName, participant) {
   if (!originalId) return;
-
-  const newText = messageText(proto.editedMessage);
   const beer_number = parseBeer(newText);
-  const member = msg.pushName || num(msg.key.participant) || "unknown";
+
+  const fields = { raw_caption: newText, ts };
+  if (pushName) { fields.member = pushName; fields.push_name = pushName; }
+  if (participant) fields.participant = participant;
 
   try {
-    const result = await handleBeerEdit(originalId, beer_number, {
-      member,
-      push_name: msg.pushName ?? null,
-      participant: num(msg.key.participant),
-      raw_caption: newText,
-    });
+    const result = await handleBeerEdit(originalId, beer_number, fields);
     if (result.action === "deleted") console.log(`edit→non-number: hard deleted beer #${result.beer?.beer_number} (${result.beer?.member})`);
-    else if (result.action === "updated") console.log(`edit: beer #${result.beer?.beer_number} updated by ${member}`);
-    else if (result.action === "inserted") console.log(`edit→new: beer #${beer_number} by ${member}`);
+    else if (result.action === "updated") console.log(`edit: message ${originalId} → beer #${beer_number}`);
+    else if (result.action === "inserted") console.log(`edit→new: beer #${beer_number}`);
     else console.log(`edit for untracked message ${originalId} — ignored`);
   } catch (err) {
     console.error("edit handling failed:", err.message);
