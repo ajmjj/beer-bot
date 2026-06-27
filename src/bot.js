@@ -9,6 +9,7 @@ import makeWASocket, {
 import pino from "pino";
 import qrcode from "qrcode-terminal";
 import { parseBeer } from "./parser.js";
+import { acquireSessionLock } from "./session-lock.js";
 import { insertBeers, markBeerDeleted, getMemberName, handleBeerEdit, getLastBeers, getMaxBeerNumber } from "./store.js";
 
 const REVOKE = proto.Message.ProtocolMessage.Type.REVOKE;
@@ -284,4 +285,5 @@ async function handleDeletion(sock, msg) {
   }
 }
 
+acquireSessionLock(); // refuse to start if another process holds the WhatsApp session
 start();
