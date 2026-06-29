@@ -37,18 +37,22 @@ export function parseBeer(text) {
 // Parse one WhatsApp export line: "[dd/mm/yyyy, h:mm:ss AM] Sender: body".
 // Returns { ts: Date, member, body } or null for lines that don't match
 // (system notices, multi-line continuations).
-// Handles both iOS 12-hour ("4:19:50 PM") and 24-hour ("16:19:50") export formats.
-const LINE = /^[‎‏]?\[(\d{2})\/(\d{2})\/(\d{4}), (\d{1,2}):(\d{2}):(\d{2})(?:\s*([AP])M)?\] ([^:]+?): (.*)$/;
+// Tolerates locale variation: date separator . / or -, 2- or 4-digit year,
+// and iOS 12-hour ("4:19:50 PM") vs 24-hour ("16:19:50") clocks.
+const LINE = /^\[(\d{1,2})[./-](\d{1,2})[./-](\d{2,4}), (\d{1,2}):(\d{2}):(\d{2})(?:\s*([AP])M)?\] ([^:]+?): (.*)$/;
 
 export function parseExportLine(line) {
-  const m = LINE.exec(line);
+  const m = LINE.exec(line.replace(INVISIBLE, "")); // strip bidi/LTR marks first so the anchor matches
   if (!m) return null;
-  const [, dd, mm, yyyy, h, min, s, ap, member, body] = m;
+  const [, dd, mm, yy, h, min, s, ap, member, body] = m;
   let hour = parseInt(h, 10);
   if (ap) { hour = hour % 12; if (ap === "P") hour += 12; } // 12-hour -> 24-hour
+  let year = parseInt(yy, 10);
+  if (year < 100) year += 2000; // 2-digit year, e.g. "26"
   // ponytail: export carries no timezone, so this is the exporter's local time. Good enough.
-  const ts = new Date(+yyyy, +mm - 1, +dd, hour, +min, +s);
-  return { ts, member: member.replace(INVISIBLE, "").trim(), body };
+  const ts = new Date(year, +mm - 1, +dd, hour, +min, +s);
+  // "~ " marks a sender not in the exporter's contacts — drop it so names match the DB.
+  return { ts, member: member.replace(/^~\s*/, "").trim(), body };
 }
 
 // Self-check: `node src/parser.js`
@@ -79,6 +83,14 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const h24 = parseExportLine("[20/06/2026, 17:42:14] Toto: 17 ‎image omitted");
   assert.equal(h24.ts.getHours(), 17);
   assert.equal(parseBeer(h24.body), 17); // "image omitted" stripped
+
+  // German locale re-export: dotted date, 2-digit year, "~ " non-contact prefix
+  const de = parseExportLine("‎[23.06.26, 20:16:09] ~ Anto Waldstein: 34 ‎image omitted");
+  assert.equal(de.member, "Anto Waldstein"); // ~ prefix + invisibles dropped
+  assert.equal(de.ts.getFullYear(), 2026); // 2-digit year -> 20xx
+  assert.equal(de.ts.getMonth(), 5);
+  assert.equal(de.ts.getHours(), 20);
+  assert.equal(parseBeer(de.body), 34);
 
   console.log("parser self-check passed");
 }
