@@ -17,6 +17,7 @@ chat_exports/*
 
 # WhatsApp session lock + any moved-aside session backups — runtime only, never commit
 .baileys_auth.lock
+.baileys_auth.sync.lock
 .baileys_auth.*/
 .baileys_auth.*/app-state-sync*
 pre-key-*.json

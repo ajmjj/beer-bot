@@ -1,10 +1,12 @@
 // Backfill beers the bot missed by paging WhatsApp history on demand.
 // Crawls backward from the newest message the server delivers down to the last known
 // beer's timestamp, inserting anything missing. Idempotent — safe to run repeatedly.
-// Uses the existing .baileys_auth/ session (stop the bot first — two sockets conflict).
+// Runs on its OWN linked device (.baileys_auth.sync), so it can run in parallel with
+// the live bot. First run prints a QR — scan it in WhatsApp → Linked Devices once.
 // Usage: node scripts/sync-gaps.js
 import "dotenv/config";
 import makeWASocket, { useMultiFileAuthState, fetchLatestBaileysVersion, proto, DisconnectReason } from "@whiskeysockets/baileys";
+import qrcode from "qrcode-terminal";
 import pino from "pino";
 import { parseBeer } from "../src/parser.js";
 import { insertBeers } from "../src/store.js";
@@ -52,6 +54,11 @@ const known = new Set(existing.map((r) => r.beer_number));
 const maxTs = existing.reduce((m, r) => Math.max(m, new Date(r.ts).getTime()), 0);
 
 const LOOKBACK = 5 * 24 * 60 * 60_000; // only chase gaps from the last 5 days
+const SYNC_AUTH_DIR = ".baileys_auth.sync";   // own linked device → runs alongside the bot
+const SYNC_LOCK = ".baileys_auth.sync.lock";  // locks only against another sync run, not the bot
+const PAGE_SIZE = 50;                          // WhatsApp caps fetchMessageHistory ~50
+const MAX_PAGES = 500;                         // ponytail: backstop only (~25k msgs/run); cutoff + end-of-history are the real stops, export+backfill handles gaps older than LOOKBACK
+const RUN_TIMEOUT_MS = 10 * 60_000;            // 10 min hard backstop
 const recentFloor = Date.now() - LOOKBACK;
 let cutoff = maxTs - 5 * 60_000; // default: just the live tip
 for (let i = 1; i < existing.length; i++) {
@@ -64,6 +71,7 @@ cutoff -= 5 * 60_000;
 console.log(`Loaded ${known.size} beers. Crawling back to ${new Date(cutoff).toLocaleString()} (last beer − 5 min).`);
 
 let inserted = 0;
+let frontierBeer = Infinity; // lowest beer number scanned so far (crawl goes backward → numbers decrease)
 let oldestKey = null, oldestTs = Infinity;
 let newestTs = 0;
 let sawGroupMsg = false;
@@ -86,7 +94,9 @@ async function ingest(msg) {
   const proto_msg = msg.message?.protocolMessage;
   const text = proto_msg?.type === MESSAGE_EDIT ? messageText(proto_msg.editedMessage) : messageText(msg.message);
   const beerNum = parseBeer(text);
-  if (beerNum === null || known.has(beerNum)) return;
+  if (beerNum === null) return;
+  if (beerNum < frontierBeer) frontierBeer = beerNum;
+  if (known.has(beerNum)) return;
 
   try {
     await insertBeers([{ beer_number: beerNum, member, push_name: msg.pushName ?? null, participant, ts, raw_caption: text, source: "sync", wa_message_id }]);
@@ -101,19 +111,26 @@ async function ingestBatch(messages) {
   if (pageSignal) { const r = pageSignal; pageSignal = null; r(); }
 }
 
-acquireSessionLock(); // exit if the bot (or another sync) holds the WhatsApp session
-const { state, saveCreds } = await useMultiFileAuthState(".baileys_auth");
+acquireSessionLock(SYNC_LOCK); // exit only if another sync run holds the sync session (the bot uses a different lock)
+const { state, saveCreds } = await useMultiFileAuthState(SYNC_AUTH_DIR);
 const { version } = await fetchLatestBaileysVersion();
 
 let sock;          // reassigned on each (re)connect; pageBack reads the latest
 let pagingStarted = false;
 
 function connect() {
-  sock = makeWASocket({ version, auth: state, logger, syncFullHistory: false, getMessage: async () => undefined });
+  // syncFullHistory: this is our own fresh device — it has no local history to page through
+  // until WhatsApp syncs it, so pull the full history (the bot does the same). Streams in via
+  // messaging-history.set; may take a minute on the first run.
+  sock = makeWASocket({ version, auth: state, logger, syncFullHistory: true, getMessage: async () => undefined });
   sock.ev.on("creds.update", saveCreds);
   sock.ev.on("messaging-history.set", ({ messages }) => ingestBatch(messages));
   sock.ev.on("messages.upsert", ({ messages }) => ingestBatch(messages)); // offline-queued / live
-  sock.ev.on("connection.update", ({ connection, lastDisconnect }) => {
+  sock.ev.on("connection.update", ({ connection, lastDisconnect, qr }) => {
+    if (qr) {
+      console.log("Scan in WhatsApp → Linked Devices to link the sync device (one-time):");
+      qrcode.generate(qr, { small: true });
+    }
     if (connection === "open") {
       if (pagingStarted) return;
       pagingStarted = true;
@@ -122,7 +139,7 @@ function connect() {
     }
     if (connection === "close" && !done) {
       const code = lastDisconnect?.error?.output?.statusCode;
-      if (code === DisconnectReason.loggedOut) { console.error("logged out — delete .baileys_auth and re-link"); process.exit(1); }
+      if (code === DisconnectReason.loggedOut) { console.error(`logged out — delete ${SYNC_AUTH_DIR} and re-link`); process.exit(1); }
       console.log(`connection closed (code ${code}), reconnecting…`);
       connect();
     }
@@ -132,7 +149,7 @@ function connect() {
 function finish(reason) {
   if (done) return;
   done = true;
-  console.log(`\n${reason} Inserted ${inserted}. Covered down to ${oldestTs === Infinity ? "nothing" : new Date(oldestTs).toLocaleString()}.`);
+  console.log(`\n${reason} Inserted ${inserted}. Covered down to ${oldestTs === Infinity ? "nothing" : new Date(oldestTs).toLocaleString()}${frontierBeer === Infinity ? "" : ` (beer #${frontierBeer})`}.`);
   if (!sawGroupMsg) {
     console.log("WhatsApp delivered no messages for this group — can't seed the crawl.");
     console.log("Fallback: export the chat (Settings → Export Chat, without media) into chat_exports/ and run `npm run backfill`.");
@@ -141,10 +158,15 @@ function finish(reason) {
 }
 
 async function pageBack() {
-  for (let pages = 0; pages < 30; pages++) {
+  // Fresh device: full history streams in via messaging-history.set and can lag the 8s seed wait.
+  // Wait up to 60s for the first group message to anchor the crawl before declaring "No anchor".
+  for (let waited = 0; !oldestKey && waited < 60_000; waited += 2_000) {
+    await new Promise((r) => setTimeout(r, 2_000));
+  }
+  for (let pages = 0; pages < MAX_PAGES; pages++) {
     if (!oldestKey || oldestTs < cutoff) return finish(oldestTs < cutoff ? "Reached cutoff." : "No anchor.");
     const anchorKey = oldestKey, anchorTs = oldestTs;
-    const sid = await sock.fetchMessageHistory(50, anchorKey, anchorTs).catch((e) => { console.error("fetchMessageHistory failed:", e.message); return null; });
+    const sid = await sock.fetchMessageHistory(PAGE_SIZE, anchorKey, anchorTs).catch((e) => { console.error("fetchMessageHistory failed:", e.message); return null; });
     if (!sid) return finish("Fetch error.");
 
     // Wait for the response batch (handler resolves pageSignal), or time out.
@@ -153,12 +175,13 @@ async function pageBack() {
       setTimeout(() => { if (pageSignal === resolve) { pageSignal = null; resolve(); } }, 15_000);
     });
 
+    console.log(`[sync] page ${pages + 1}/${MAX_PAGES}: back to beer ${frontierBeer === Infinity ? "?" : "#" + frontierBeer} (${new Date(oldestTs).toLocaleString()})`);
     if (oldestKey === anchorKey && oldestTs === anchorTs) return finish("Reached end of available history.");
   }
   finish("Hit page cap.");
 }
 
 // Global safety net so the script can never hang forever (the old bug).
-setTimeout(() => finish("Global timeout."), 180_000);
+setTimeout(() => finish("Global timeout."), RUN_TIMEOUT_MS);
 
 connect();
