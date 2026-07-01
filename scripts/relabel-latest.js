@@ -30,15 +30,17 @@ for (const r of rows) {
   byPart.get(r.participant).push(r);
 }
 
+const clean = (n) => (n ? n.replace(/\s+/g, " ").trim() : n); // collapse/trim whitespace so "Moritz Flick " == "Moritz Flick"
+
 let changedParts = 0, changedBeers = 0;
 for (const [p, list] of byPart) {
-  const named = list.filter((r) => r.push_name);
-  if (!named.length) continue; // no name known for this participant → nothing to normalise to
-  const latest = named.reduce((a, b) => (new Date(b.ts) >= new Date(a.ts) ? b : a)).push_name;
-  const stale = list.filter((r) => r.push_name !== latest); // null or an older name
+  const named = list.filter((r) => clean(r.push_name)); // has a real (non-blank) name
+  if (!named.length) continue; // nothing to normalise to
+  const latest = clean(named.reduce((a, b) => (new Date(b.ts) >= new Date(a.ts) ? b : a)).push_name);
+  const stale = list.filter((r) => r.push_name !== latest); // null, an older name, or a whitespace variant
   if (!stale.length) continue;
 
-  const distinct = [...new Set(named.map((r) => r.push_name))];
+  const distinct = [...new Set(named.map((r) => clean(r.push_name)))];
   changedParts++;
   changedBeers += stale.length;
   console.log(`${maskPhone(p)}: [${distinct.join(" | ")}] -> ${JSON.stringify(latest)} — ${stale.length} beers${distinct.length > 2 ? "  ⚠ 3+ names (check for shared device)" : ""}`);
