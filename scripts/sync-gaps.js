@@ -3,38 +3,40 @@
 // beer's timestamp, inserting anything missing. Idempotent — safe to run repeatedly.
 // Runs on its OWN linked device (.baileys_auth.sync), so it can run in parallel with
 // the live bot. First run prints a QR — scan it in WhatsApp → Linked Devices once.
-// Usage: node scripts/sync-gaps.js
+// A beer counts only as a NUMBER captioned on a photo/video — plain-text numbers (replies,
+// typos, chatter) are ignored. Collects every such message first, then per number keeps the
+// EARLIEST poster as ground truth: inserts missing beers, and (with --fix) corrects a wrong
+// recorded sender / fills a missing push_name. Same history window as inserts.
+// Usage: node scripts/sync-gaps.js [--fix]
 import "dotenv/config";
 import makeWASocket, { useMultiFileAuthState, fetchLatestBaileysVersion, proto, DisconnectReason } from "@whiskeysockets/baileys";
 import qrcode from "qrcode-terminal";
 import pino from "pino";
-import { parseBeer } from "../src/parser.js";
-import { insertBeers } from "../src/store.js";
+import { parseBeer, maskPhone } from "../src/parser.js";
+import { insertBeers, correctBeerMember } from "../src/store.js";
 import { acquireSessionLock } from "../src/session-lock.js";
 import { createClient } from "@supabase/supabase-js";
 
 const GROUP_JID = process.env.GROUP_JID;
 if (!GROUP_JID) { console.error("GROUP_JID not set"); process.exit(1); }
+const FIX = process.argv.includes("--fix"); // also overwrite wrong senders, not just insert missing
 
 const MESSAGE_EDIT = proto.Message.ProtocolMessage.Type.MESSAGE_EDIT;
 const num = (jid) => (jid ? jid.split("@")[0].split(":")[0] : null);
 const logger = pino({ level: "warn" });
 
-function messageText(message) {
+// A beer must be a NUMBER captioned on a photo/video. Returns the caption for image/video
+// messages (unwrapping ephemeral / view-once / doc-with-caption), or null for anything else —
+// so plain-text numbers (replies, typos, chatter) are never counted as beers.
+function mediaCaption(message) {
   const m =
     message?.ephemeralMessage?.message ??
     message?.viewOnceMessage?.message ??
     message?.viewOnceMessageV2?.message ??
     message?.documentWithCaptionMessage?.message ??
     message;
-  return (
-    m?.conversation ||
-    m?.extendedTextMessage?.text ||
-    m?.imageMessage?.caption ||
-    m?.videoMessage?.caption ||
-    m?.documentMessage?.caption ||
-    ""
-  );
+  const media = m?.imageMessage ?? m?.videoMessage;
+  return media ? (media.caption ?? "") : null;
 }
 
 // fetchMessageHistory only pages backward, so we seed from the newest delivered message
@@ -45,12 +47,13 @@ const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SEC
 // Paginate: a single select caps at 1000 rows.
 const existing = [];
 for (let from = 0; ; from += 1000) {
-  const { data: page, error } = await supabase.from("beers").select("beer_number, ts").order("beer_number", { ascending: true }).range(from, from + 999);
+  const { data: page, error } = await supabase.from("beers").select("beer_number, ts, participant, member, push_name").order("beer_number", { ascending: true }).range(from, from + 999);
   if (error) { console.error(error.message); process.exit(1); }
   existing.push(...page);
   if (page.length < 1000) break;
 }
 const known = new Set(existing.map((r) => r.beer_number));
+const byNum = new Map(existing.map((r) => [r.beer_number, r])); // for sender reconciliation
 const maxTs = existing.reduce((m, r) => Math.max(m, new Date(r.ts).getTime()), 0);
 
 const LOOKBACK = 5 * 24 * 60 * 60_000; // only chase gaps from the last 5 days
@@ -71,6 +74,8 @@ cutoff -= 5 * 60_000;
 console.log(`Loaded ${known.size} beers. Crawling back to ${new Date(cutoff).toLocaleString()} (last beer − 5 min).`);
 
 let inserted = 0;
+let mismatches = 0, fixes = 0;
+const crawlByNum = new Map(); // beer_number -> [{ ts, participant, pushName, member, wa_message_id, raw_caption }] — reconciled after the crawl
 let frontierBeer = Infinity; // lowest beer number scanned so far (crawl goes backward → numbers decrease)
 let oldestKey = null, oldestTs = Infinity;
 let newestTs = 0;
@@ -78,36 +83,59 @@ let sawGroupMsg = false;
 let pageSignal = null; // resolves the in-flight page wait when a batch arrives
 let done = false;
 
-async function ingest(msg) {
+// Collect only — the crawl sees the same number from newest to oldest and can see duplicate
+// posters; we decide the authoritative (earliest) sender once, in reconcile(), after the crawl.
+function ingest(msg) {
   if (msg.key?.remoteJid !== GROUP_JID) return;
   sawGroupMsg = true;
   const msgTs = Number(msg.messageTimestamp) * 1000;
   if (msgTs < oldestTs) { oldestTs = msgTs; oldestKey = msg.key; }
   if (msgTs > newestTs) { newestTs = msgTs; }
 
-  const ts = new Date(msgTs);
-  const member = msg.pushName || num(msg.key.participant) || "unknown";
-  const participant = num(msg.key.participant);
-  const wa_message_id = msg.key.id;
-
   // Edits carry the new content in a protocol message; re-parse it.
   const proto_msg = msg.message?.protocolMessage;
-  const text = proto_msg?.type === MESSAGE_EDIT ? messageText(proto_msg.editedMessage) : messageText(msg.message);
+  const text = mediaCaption(proto_msg?.type === MESSAGE_EDIT ? proto_msg.editedMessage : msg.message);
+  if (text === null) return;           // not a photo/video → not a beer
   const beerNum = parseBeer(text);
   if (beerNum === null) return;
   if (beerNum < frontierBeer) frontierBeer = beerNum;
-  if (known.has(beerNum)) return;
 
-  try {
-    await insertBeers([{ beer_number: beerNum, member, push_name: msg.pushName ?? null, participant, ts, raw_caption: text, source: "sync", wa_message_id }]);
-    known.add(beerNum);
-    inserted++;
-    console.log(`[sync] inserted #${beerNum} by ${member} @ ${ts.toLocaleTimeString()}`);
-  } catch (e) { console.error(`[sync] failed #${beerNum}:`, e.message); }
+  const participant = num(msg.key.participant);
+  const list = crawlByNum.get(beerNum) ?? [];
+  list.push({ ts: new Date(msgTs), participant, pushName: msg.pushName ?? null, member: msg.pushName || participant || "unknown", wa_message_id: msg.key.id, raw_caption: text });
+  crawlByNum.set(beerNum, list);
 }
 
-async function ingestBatch(messages) {
-  for (const msg of messages) await ingest(msg);
+// After the crawl: per number, the EARLIEST poster is ground truth. Insert missing beers;
+// with --fix, correct a wrong recorded sender and fill a missing push_name.
+async function reconcile() {
+  for (const beerNum of [...crawlByNum.keys()].sort((a, b) => a - b)) {
+    const list = crawlByNum.get(beerNum).sort((a, b) => a.ts - b.ts);
+    const first = list[0]; // earliest media submission wins over later duplicates
+    const senders = new Set(list.filter((e) => e.participant).map((e) => e.participant));
+    if (senders.size > 1) console.log(`[dup] #${beerNum} posted by ${senders.size} people — keeping earliest ${first.member}(${maskPhone(first.participant)})`);
+
+    if (!known.has(beerNum)) {
+      try {
+        const n = await insertBeers([{ beer_number: beerNum, member: first.member, push_name: first.pushName, participant: first.participant, ts: first.ts, raw_caption: first.raw_caption, source: "sync", wa_message_id: first.wa_message_id }]);
+        if (n) { inserted++; console.log(`[sync] inserted #${beerNum} by ${first.member} @ ${first.ts.toLocaleString()}`); }
+      } catch (e) { console.error(`[sync] failed #${beerNum}:`, e.message); }
+      continue;
+    }
+
+    const db = byNum.get(beerNum);
+    const senderWrong = first.participant && db.participant !== first.participant;
+    const pushMissing = first.pushName && !db.push_name; // store the display name we now have
+    if (!senderWrong && !pushMissing) continue;
+    const what = senderWrong ? `${db.member}(${maskPhone(db.participant)}) → ${first.member}(${maskPhone(first.participant)})` : `fill push_name → ${first.pushName}`;
+    console.log(`[fix] #${beerNum} ${what}${FIX ? "" : "  (dry-run)"}`);
+    mismatches++;
+    if (FIX) { await correctBeerMember(beerNum, { participant: first.participant ?? db.participant, pushName: first.pushName, member: first.member }); fixes++; }
+  }
+}
+
+function ingestBatch(messages) {
+  for (const msg of messages) ingest(msg);
   if (pageSignal) { const r = pageSignal; pageSignal = null; r(); }
 }
 
@@ -146,10 +174,13 @@ function connect() {
   });
 }
 
-function finish(reason) {
+async function finish(reason) {
   if (done) return;
   done = true;
-  console.log(`\n${reason} Inserted ${inserted}. Covered down to ${oldestTs === Infinity ? "nothing" : new Date(oldestTs).toLocaleString()}${frontierBeer === Infinity ? "" : ` (beer #${frontierBeer})`}.`);
+  console.log(`\n${reason} Reconciling ${crawlByNum.size} collected beers…`);
+  await reconcile();
+  const senders = FIX ? `Fixed ${fixes} senders.` : `${mismatches} sender mismatch${mismatches === 1 ? "" : "es"}${mismatches ? " (re-run with --fix to apply)" : ""}.`;
+  console.log(`${reason} Inserted ${inserted}. ${senders} Covered down to ${oldestTs === Infinity ? "nothing" : new Date(oldestTs).toLocaleString()}${frontierBeer === Infinity ? "" : ` (beer #${frontierBeer})`}.`);
   if (!sawGroupMsg) {
     console.log("WhatsApp delivered no messages for this group — can't seed the crawl.");
     console.log("Fallback: export the chat (Settings → Export Chat, without media) into chat_exports/ and run `npm run backfill`.");
@@ -163,6 +194,7 @@ async function pageBack() {
   for (let waited = 0; !oldestKey && waited < 60_000; waited += 2_000) {
     await new Promise((r) => setTimeout(r, 2_000));
   }
+  let stalls = 0;
   for (let pages = 0; pages < MAX_PAGES; pages++) {
     if (!oldestKey || oldestTs < cutoff) return finish(oldestTs < cutoff ? "Reached cutoff." : "No anchor.");
     const anchorKey = oldestKey, anchorTs = oldestTs;
@@ -175,8 +207,17 @@ async function pageBack() {
       setTimeout(() => { if (pageSignal === resolve) { pageSignal = null; resolve(); } }, 15_000);
     });
 
+    if (oldestKey === anchorKey && oldestTs === anchorTs) {
+      // No older messages came back. If we're still well above the cutoff, the phone's history
+      // sync is probably just lagging — wait and retry a few times before concluding we hit the floor.
+      if (++stalls <= 5 && oldestTs > cutoff) {
+        console.log(`[sync] no older messages yet — waiting for history to stream in… (at ${frontierBeer === Infinity ? "?" : "#" + frontierBeer})`);
+        await new Promise((r) => setTimeout(r, 5_000)); pages--; continue;
+      }
+      return finish("Reached end of available history.");
+    }
+    stalls = 0;
     console.log(`[sync] page ${pages + 1}/${MAX_PAGES}: back to beer ${frontierBeer === Infinity ? "?" : "#" + frontierBeer} (${new Date(oldestTs).toLocaleString()})`);
-    if (oldestKey === anchorKey && oldestTs === anchorTs) return finish("Reached end of available history.");
   }
   finish("Hit page cap.");
 }

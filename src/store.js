@@ -34,6 +34,17 @@ export async function insertBeers(entries) {
   return data?.length ?? 0; // only newly-inserted rows come back
 }
 
+// Overwrite who a beer is attributed to (the chat message is ground truth). Returns the
+// row if changed, else null. Targets beer_number so it works for any source.
+export async function correctBeerMember(beerNumber, { participant, pushName, member }) {
+  const { data, error } = await supabase.from("beers")
+    .update({ participant, push_name: pushName ?? null, member: maskPhone(member) })
+    .eq("beer_number", beerNumber)
+    .select("beer_number, member");
+  if (error) throw error;
+  return data?.[0] ?? null;
+}
+
 // Handle a message edit. If newBeerNumber is null, hard-delete the row. Otherwise update it
 // (or insert if the original message wasn't tracked).
 // Returns { action: 'deleted'|'updated'|'inserted'|'noop', beer }
