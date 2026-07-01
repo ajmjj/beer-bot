@@ -13,6 +13,7 @@
     "gaps": "node scripts/gaps.js",
     "match-gaps": "node scripts/match-gaps.js",
     "sync-gaps": "node scripts/sync-gaps.js",
+    "fill-push-names": "node scripts/fill-push-names.js",
     "mismatches": "node scripts/mismatches.js",
     "test": "node src/parser.js"
   },

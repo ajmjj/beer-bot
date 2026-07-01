@@ -6,7 +6,9 @@
 // A beer counts only as a NUMBER captioned on a photo/video — plain-text numbers (replies,
 // typos, chatter) are ignored. Collects every such message first, then per number keeps the
 // EARLIEST poster as ground truth: inserts missing beers, and (with --fix) corrects a wrong
-// recorded sender / fills a missing push_name. Same history window as inserts.
+// recorded sender. Display names come in two stages: the crawl captures WhatsApp's PUSH_NAME
+// contacts to name new inserts, then fillPushNames() sweeps the whole table for any still
+// null. Same history window as inserts.
 // Usage: node scripts/sync-gaps.js [--fix]
 import "dotenv/config";
 import makeWASocket, { useMultiFileAuthState, fetchLatestBaileysVersion, proto, DisconnectReason } from "@whiskeysockets/baileys";
@@ -14,6 +16,7 @@ import qrcode from "qrcode-terminal";
 import pino from "pino";
 import { parseBeer, maskPhone } from "../src/parser.js";
 import { insertBeers, correctBeerMember } from "../src/store.js";
+import { fillPushNames } from "./fill-push-names.js";
 import { acquireSessionLock } from "../src/session-lock.js";
 import { createClient } from "@supabase/supabase-js";
 
@@ -200,8 +203,12 @@ async function finish(reason) {
   done = true;
   console.log(`\n${reason} Reconciling ${crawlByNum.size} collected beers…`);
   await reconcile();
+  // Final sweep: backfill any push_name still null across the whole table from names known
+  // on other beers (the in-crawl capture only touched numbers seen this run).
+  const named = await fillPushNames({ apply: FIX });
   const senders = FIX ? `Fixed ${fixes} senders.` : `${mismatches} sender mismatch${mismatches === 1 ? "" : "es"}${mismatches ? " (re-run with --fix to apply)" : ""}.`;
-  console.log(`${reason} Inserted ${inserted}. ${senders} Covered down to ${oldestTs === Infinity ? "nothing" : new Date(oldestTs).toLocaleString()}${frontierBeer === Infinity ? "" : ` (beer #${frontierBeer})`}.`);
+  const names = FIX ? `Named ${named.updated} (${named.missing} unresolved).` : `${named.resolvable} push_names fillable (re-run with --fix).`;
+  console.log(`${reason} Inserted ${inserted}. ${senders} ${names} Covered down to ${oldestTs === Infinity ? "nothing" : new Date(oldestTs).toLocaleString()}${frontierBeer === Infinity ? "" : ` (beer #${frontierBeer})`}.`);
   if (!sawGroupMsg) {
     console.log("WhatsApp delivered no messages for this group — can't seed the crawl.");
     console.log("Fallback: export the chat (Settings → Export Chat, without media) into chat_exports/ and run `npm run backfill`.");
