@@ -56,6 +56,21 @@ const known = new Set(existing.map((r) => r.beer_number));
 const byNum = new Map(existing.map((r) => [r.beer_number, r])); // for sender reconciliation
 const maxTs = existing.reduce((m, r) => Math.max(m, new Date(r.ts).getTime()), 0);
 
+// Historical messages from fetchMessageHistory carry NO pushName, so resolve display names
+// from what we already know — existing beers, the members roster, and contacts/live messages
+// seen during the crawl — keyed by participant (the stable LID/phone). First real name wins.
+const nameByPart = new Map();
+const looksLikePhone = (s) => !s || /^[+\d x]+$/.test(s); // masked/raw phone → not a real name
+function learnName(participant, name) {
+  if (participant && name && !looksLikePhone(name) && !nameByPart.has(participant)) nameByPart.set(participant, name.trim());
+}
+function learnContacts(contacts) {
+  for (const c of contacts ?? []) learnName(num(c.id), c.name || c.notify || c.verifiedName);
+}
+for (const r of existing) { learnName(r.participant, r.push_name); learnName(r.participant, r.member); }
+const { data: members } = await supabase.from("members").select("participant, member, push_name");
+for (const m of members ?? []) { learnName(m.participant, m.push_name); learnName(m.participant, m.member); }
+
 const LOOKBACK = 5 * 24 * 60 * 60_000; // only chase gaps from the last 5 days
 const SYNC_AUTH_DIR = ".baileys_auth.sync";   // own linked device → runs alongside the bot
 const SYNC_LOCK = ".baileys_auth.sync.lock";  // locks only against another sync run, not the bot
@@ -101,6 +116,7 @@ function ingest(msg) {
   if (beerNum < frontierBeer) frontierBeer = beerNum;
 
   const participant = num(msg.key.participant);
+  if (msg.pushName) learnName(participant, msg.pushName); // live/tip messages do carry it
   const list = crawlByNum.get(beerNum) ?? [];
   list.push({ ts: new Date(msgTs), participant, pushName: msg.pushName ?? null, member: msg.pushName || participant || "unknown", wa_message_id: msg.key.id, raw_caption: text });
   crawlByNum.set(beerNum, list);
@@ -112,25 +128,28 @@ async function reconcile() {
   for (const beerNum of [...crawlByNum.keys()].sort((a, b) => a - b)) {
     const list = crawlByNum.get(beerNum).sort((a, b) => a.ts - b.ts);
     const first = list[0]; // earliest media submission wins over later duplicates
+    // History has no pushName → fall back to the resolved name for this participant.
+    const name = first.pushName || nameByPart.get(first.participant) || null;
+    const member = name || first.participant || "unknown";
     const senders = new Set(list.filter((e) => e.participant).map((e) => e.participant));
-    if (senders.size > 1) console.log(`[dup] #${beerNum} posted by ${senders.size} people — keeping earliest ${first.member}(${maskPhone(first.participant)})`);
+    if (senders.size > 1) console.log(`[dup] #${beerNum} posted by ${senders.size} people — keeping earliest ${member}(${maskPhone(first.participant)})`);
 
     if (!known.has(beerNum)) {
       try {
-        const n = await insertBeers([{ beer_number: beerNum, member: first.member, push_name: first.pushName, participant: first.participant, ts: first.ts, raw_caption: first.raw_caption, source: "sync", wa_message_id: first.wa_message_id }]);
-        if (n) { inserted++; console.log(`[sync] inserted #${beerNum} by ${first.member} @ ${first.ts.toLocaleString()}`); }
+        const n = await insertBeers([{ beer_number: beerNum, member, push_name: name, participant: first.participant, ts: first.ts, raw_caption: first.raw_caption, source: "sync", wa_message_id: first.wa_message_id }]);
+        if (n) { inserted++; console.log(`[sync] inserted #${beerNum} by ${member} @ ${first.ts.toLocaleString()}`); }
       } catch (e) { console.error(`[sync] failed #${beerNum}:`, e.message); }
       continue;
     }
 
     const db = byNum.get(beerNum);
     const senderWrong = first.participant && db.participant !== first.participant;
-    const pushMissing = first.pushName && !db.push_name; // store the display name we now have
+    const pushMissing = name && !db.push_name; // store the display name we now have
     if (!senderWrong && !pushMissing) continue;
-    const what = senderWrong ? `${db.member}(${maskPhone(db.participant)}) → ${first.member}(${maskPhone(first.participant)})` : `fill push_name → ${first.pushName}`;
+    const what = senderWrong ? `${db.member}(${maskPhone(db.participant)}) → ${member}(${maskPhone(first.participant)})` : `fill push_name → ${name}`;
     console.log(`[fix] #${beerNum} ${what}${FIX ? "" : "  (dry-run)"}`);
     mismatches++;
-    if (FIX) { await correctBeerMember(beerNum, { participant: first.participant ?? db.participant, pushName: first.pushName, member: first.member }); fixes++; }
+    if (FIX) { await correctBeerMember(beerNum, { participant: first.participant ?? db.participant, pushName: name, member }); fixes++; }
   }
 }
 
@@ -152,8 +171,10 @@ function connect() {
   // messaging-history.set; may take a minute on the first run.
   sock = makeWASocket({ version, auth: state, logger, syncFullHistory: true, getMessage: async () => undefined });
   sock.ev.on("creds.update", saveCreds);
-  sock.ev.on("messaging-history.set", ({ messages }) => ingestBatch(messages));
+  sock.ev.on("messaging-history.set", ({ messages, contacts }) => { learnContacts(contacts); ingestBatch(messages); });
   sock.ev.on("messages.upsert", ({ messages }) => ingestBatch(messages)); // offline-queued / live
+  sock.ev.on("contacts.upsert", learnContacts);
+  sock.ev.on("contacts.set", ({ contacts }) => learnContacts(contacts));
   sock.ev.on("connection.update", ({ connection, lastDisconnect, qr }) => {
     if (qr) {
       console.log("Scan in WhatsApp → Linked Devices to link the sync device (one-time):");
