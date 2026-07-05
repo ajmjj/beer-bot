@@ -20,7 +20,8 @@ const num = (jid) => (jid ? jid.split("@")[0].split(":")[0] : null); // jid -> b
 const GROUP_JID = process.env.GROUP_JID || null;
 const MAX_SKIP = 5; // reject beer numbers more than this far ahead of current max
 const PAIR_NUMBER = process.env.PAIR_NUMBER || null; // optional: e.g. 491701234567 for pairing-code login
-const logger = pino({ level: process.env.LOG_LEVEL || "warn" });
+const log = pino({ level: process.env.LOG_LEVEL || "info" });
+const baileysLogger = log.child({ module: "baileys" }, { level: process.env.BAILEYS_LOG_LEVEL || "warn" });
 
 function messageText(message) {
   // Unwrap container types: HD images (viewOnceMessageV2), live photos (viewOnceMessage),
@@ -45,10 +46,18 @@ async function start() {
   const { state, saveCreds } = await useMultiFileAuthState(".baileys_auth");
   const { version } = await fetchLatestBaileysVersion();
   const sock = makeWASocket({
-    version, auth: state, logger,
+    version, auth: state, logger: baileysLogger,
     syncFullHistory: true,
     getMessage: async () => undefined, // ponytail: no local cache; tells Baileys to fetch missed messages from server
   });
+
+  // LOG_EVENTS=1: dump every incoming Baileys event with its full payload.
+  // ponytail: messaging-history.set batches can be huge — truncate if it bites.
+  if (process.env.LOG_EVENTS) {
+    sock.ev.process((events) => {
+      for (const [event, data] of Object.entries(events)) log.info({ event, data }, "wa event");
+    });
+  }
 
   sock.ev.on("creds.update", saveCreds);
 
@@ -90,9 +99,9 @@ async function start() {
         if (newNum !== null && newNum !== dbBeer.beer_number) {
           try {
             await handleBeerEdit(id, newNum, { raw_caption: text });
-            console.log(`[startup] corrected beer #${dbBeer.beer_number} → #${newNum}`);
+            log.info({ scope: "startup", from: dbBeer.beer_number, to: newNum }, "corrected beer");
           } catch (err) {
-            console.error("[startup] edit correction failed:", err.message);
+            log.error({ scope: "startup", err }, "edit correction failed");
           }
         }
       }
@@ -106,8 +115,8 @@ async function start() {
           const member = msg.pushName || num(msg.key.participant) || "unknown";
           try {
             const n = await insertBeers([{ beer_number: editNum, member, push_name: msg.pushName ?? null, participant: num(msg.key.participant), ts: new Date(msgTs), raw_caption: editText, source: "live", wa_message_id: id }]);
-            if (n) console.log(`[startup] gap-fill from edit: beer #${editNum} by ${member}`);
-          } catch (err) { console.error(`[startup] gap-fill edit failed #${editNum}:`, err.message); }
+            if (n) log.info({ scope: "startup", beer: editNum, member }, "gap-fill from edit");
+          } catch (err) { log.error({ scope: "startup", beer: editNum, err }, "gap-fill edit failed"); }
         }
       }
 
@@ -124,9 +133,9 @@ async function start() {
             ts: new Date(msgTs),
             raw_caption: text, source: "live", wa_message_id: id,
           }]);
-          if (inserted) console.log(`[startup] caught up beer #${beerNum} by ${member}`);
+          if (inserted) log.info({ scope: "startup", beer: beerNum, member }, "caught up beer");
         } catch (err) {
-          console.error(`[startup] insert failed for #${beerNum}:`, err.message);
+          log.error({ scope: "startup", beer: beerNum, err }, "insert failed");
         }
       }
     }
@@ -139,14 +148,14 @@ async function start() {
         if (audit.oldestSeen <= new Date(beer.ts).getTime()) {
           try {
             const deleted = await markBeerDeleted(id, "startup-audit", null, false);
-            if (deleted) console.log(`[startup] removed beer #${deleted.beer_number} (deleted while offline)`);
+            if (deleted) log.info({ scope: "startup", beer: deleted.beer_number }, "removed beer deleted while offline");
           } catch (err) {
-            console.error("[startup] delete failed:", err.message);
+            log.error({ scope: "startup", err }, "delete failed");
           }
         }
       }
       audit.done = true;
-      console.log("[startup] audit complete");
+      log.info({ scope: "startup" }, "audit complete");
     }
   });
 
@@ -156,7 +165,7 @@ async function start() {
       qrcode.generate(qr, { small: true });
     }
     if (connection === "open") {
-      console.log("connected" + (GROUP_JID ? `, watching ${GROUP_JID}` : ", no GROUP_JID set — logging group JIDs below"));
+      log.info({ group: GROUP_JID }, GROUP_JID ? "connected" : "connected — no GROUP_JID set, logging group JIDs");
       if (GROUP_JID) {
         try {
           const lastBeers = await getLastBeers(10);
@@ -169,9 +178,9 @@ async function start() {
             oldestSeen: Infinity,
             done: false,
           });
-          console.log(`[startup] watching last ${lastBeers.length} beers (newest: #${lastBeerNumber})`);
+          log.info({ scope: "startup", count: lastBeers.length, newest: lastBeerNumber }, "watching last beers");
         } catch (err) {
-          console.error("[startup] failed to load last beers:", err.message);
+          log.error({ scope: "startup", err }, "failed to load last beers");
           resolveAudit(null);
         }
       } else {
@@ -181,9 +190,9 @@ async function start() {
     if (connection === "close") {
       const code = lastDisconnect?.error?.output?.statusCode;
       if (code === DisconnectReason.loggedOut) {
-        console.error("logged out — delete .baileys_auth and re-link");
+        log.error("logged out — delete .baileys_auth and re-link");
       } else {
-        console.log("connection closed, reconnecting...");
+        log.info({ code }, "connection closed, reconnecting");
         start();
       }
     }
@@ -197,7 +206,7 @@ async function start() {
 
       // Discovery mode: no GROUP_JID yet — print what we see so the user can pick.
       if (!GROUP_JID) {
-        console.log(`group message from jid=${jid} (${msg.pushName ?? "?"})`);
+        log.info({ jid, pushName: msg.pushName ?? null }, "group message (discovery mode)");
         continue;
       }
       if (jid !== GROUP_JID) continue;
@@ -219,7 +228,7 @@ async function start() {
       const beer_number = parseBeer(text);
       const member = msg.pushName || num(msg.key.participant) || "unknown";
       if (beer_number === null) {
-        if (text.trim()) console.log(`skipped: ${member}: ${JSON.stringify(text.slice(0, 60))}`);
+        if (text.trim()) log.info({ member, text: text.slice(0, 60) }, "skipped non-beer message");
         continue;
       }
       const entry = {
@@ -239,24 +248,25 @@ async function start() {
       const decision = guardDecision(beer_number, maxKnown, pendingHigh, MAX_SKIP);
       if (decision === "hold") {
         pendingHigh = entry;
-        console.warn(`[hold] beer #${beer_number} by ${member} ran ahead of #${maxKnown}; awaiting confirmation`);
+        log.warn({ beer: beer_number, member, max: maxKnown }, "beer ran ahead; awaiting confirmation");
         continue;
       }
       if (decision === "confirm") {
         try {
           await insertBeers([pendingHigh]);
-          console.log(`[unstick] confirmed jump to #${pendingHigh.beer_number}, resuming live counting`);
+          log.info({ beer: pendingHigh.beer_number }, "confirmed jump, resuming live counting");
         } catch (err) {
-          console.error(`unstick insert failed for #${pendingHigh.beer_number}:`, err.message);
+          log.error({ beer: pendingHigh.beer_number, err }, "unstick insert failed");
         }
       }
       pendingHigh = null;
 
       try {
         const inserted = await insertBeers([entry]);
-        console.log(inserted ? `${catchup ? "[catchup] " : ""}beer #${beer_number} by ${member}` : `dup #${beer_number} (ignored)`);
+        if (inserted) log.info({ beer: beer_number, member, catchup }, "beer recorded");
+        else log.info({ beer: beer_number, member }, "duplicate ignored");
       } catch (err) {
-        console.error(`write failed for #${beer_number}:`, err.message);
+        log.error({ beer: beer_number, err }, "write failed");
       }
     }
   });
@@ -287,12 +297,12 @@ async function handleEdit(originalId, newText, ts, pushName, participant) {
 
   try {
     const result = await handleBeerEdit(originalId, beer_number, fields);
-    if (result.action === "deleted") console.log(`edit→non-number: hard deleted beer #${result.beer?.beer_number} (${result.beer?.member})`);
-    else if (result.action === "updated") console.log(`edit: message ${originalId} → beer #${beer_number}`);
-    else if (result.action === "inserted") console.log(`edit→new: beer #${beer_number}`);
-    else console.log(`edit for untracked message ${originalId} — ignored`);
+    if (result.action === "deleted") log.info({ beer: result.beer?.beer_number, member: result.beer?.member }, "edit to non-number: hard deleted beer");
+    else if (result.action === "updated") log.info({ id: originalId, beer: beer_number }, "edit updated beer");
+    else if (result.action === "inserted") log.info({ beer: beer_number }, "edit created new beer");
+    else log.info({ id: originalId }, "edit for untracked message ignored");
   } catch (err) {
-    console.error("edit handling failed:", err.message);
+    log.error({ id: originalId, err }, "edit handling failed");
   }
 }
 
@@ -311,7 +321,7 @@ async function handleDeletion(sock, msg) {
     );
     byAdmin = !!deleterJid && deleterJid !== authorJid && admins.has(deleterJid);
   } catch (err) {
-    console.error("couldn't fetch group admins:", err.message);
+    log.error({ err }, "couldn't fetch group admins");
   }
 
   const deleterNumber = num(deleterJid);
@@ -320,13 +330,10 @@ async function handleDeletion(sock, msg) {
 
   try {
     const beer = await markBeerDeleted(deletedId, deleterNumber, deleterName, byAdmin);
-    console.log(
-      beer
-        ? `deleted beer #${beer.beer_number} (${beer.member}) by ${deleterName || deleterNumber}${byAdmin ? " [admin]" : ""}`
-        : `revoke for untracked message ${deletedId} (likely a backfilled/non-beer message) — ignored`,
-    );
+    if (beer) log.info({ beer: beer.beer_number, member: beer.member, deletedBy: deleterName || deleterNumber, byAdmin }, "beer deleted");
+    else log.info({ id: deletedId }, "revoke for untracked message (likely backfilled/non-beer) ignored");
   } catch (err) {
-    console.error("deletion record failed:", err.message);
+    log.error({ id: deletedId, err }, "deletion record failed");
   }
 }
 
