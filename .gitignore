@@ -2,6 +2,7 @@ node_modules/
 credentials.json
 .env
 *.json.bak
+*.log
 
 # Baileys WhatsApp session — a live credential, never commit
 .baileys_auth/
