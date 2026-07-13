@@ -67,7 +67,9 @@ SUPABASE_URL=https://<project>.supabase.co
 SUPABASE_SECRET_KEY=<service/secret key — write access>
 GROUP_JID=<the group's …@g.us id>   # omit to run discovery mode first
 PAIR_NUMBER=491701234567            # optional: pairing-code login instead of QR
-LOG_LEVEL=warn                      # optional
+LOG_LEVEL=warn                      # optional: bot's own log level (default info)
+BAILEYS_LOG_LEVEL=warn              # optional: Baileys library's own log level (default warn)
+LOG_EVENTS=1                        # optional: dump every incoming Baileys event (implies debug)
 ```
 
 Run [schema.sql](schema.sql) against your Supabase project (see the header in
@@ -76,7 +78,8 @@ that file for fresh-install vs. existing-database notes).
 ## Running
 
 ```bash
-npm run bot          # start the live listener
+npm run bot          # start the live listener, plain pino JSON logs to stdout
+npm run bot:log      # same, but pretty-printed and appended to beer-bot.log
 npm test             # parser self-check
 npm run backfill     # import chat_exports/_chat.txt into Supabase (one-time)
 npm run gaps         # report missing beer numbers
@@ -87,6 +90,14 @@ node scripts/insert-beer.js <n> <member> <iso_ts> [participant]  # manually inse
 First run, the bot prints a QR code (or a pairing code if `PAIR_NUMBER` is set) —
 link it under WhatsApp → Linked Devices. If `GROUP_JID` is unset, it logs the
 groups it sees; copy the right `…@g.us` JID into `.env` and restart.
+
+**Logging**: `LOG_LEVEL` sets the bot's own verbosity (`info` by default);
+`BAILEYS_LOG_LEVEL` does the same for the underlying Baileys library, which is
+noisy at anything above `warn`. `LOG_EVENTS=1` dumps every raw Baileys event
+(implies `debug`) — useful when tracing a message the parser mishandled.
+Use `npm run bot:log` instead of `npm run bot` to get plain-text lines (via
+[scripts/pretty-log.js](scripts/pretty-log.js)) appended to `beer-bot.log`,
+in a format line-based log viewers like Lumen can tail.
 
 The website ([docs/](docs/)) is a static site served via GitHub Pages; it reads
 Supabase directly using the publishable key in [docs/config.js](docs/config.js).
