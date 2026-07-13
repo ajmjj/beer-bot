@@ -20,7 +20,7 @@ const num = (jid) => (jid ? jid.split("@")[0].split(":")[0] : null); // jid -> b
 const GROUP_JID = process.env.GROUP_JID || null;
 const MAX_SKIP = 5; // reject beer numbers more than this far ahead of current max
 const PAIR_NUMBER = process.env.PAIR_NUMBER || null; // optional: e.g. 491701234567 for pairing-code login
-const log = pino({ level: process.env.LOG_LEVEL || "info" });
+const log = pino({ level: process.env.LOG_LEVEL || (process.env.LOG_EVENTS ? "debug" : "info") });
 const baileysLogger = log.child({ module: "baileys" }, { level: process.env.BAILEYS_LOG_LEVEL || "warn" });
 
 function messageText(message) {
@@ -55,7 +55,7 @@ async function start() {
   // ponytail: messaging-history.set batches can be huge — truncate if it bites.
   if (process.env.LOG_EVENTS) {
     sock.ev.process((events) => {
-      for (const [event, data] of Object.entries(events)) log.info({ event, data }, "wa event");
+      for (const [event, data] of Object.entries(events)) log.debug({ event, data }, "wa event");
     });
   }
 
