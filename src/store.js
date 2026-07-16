@@ -70,7 +70,8 @@ export async function handleBeerEdit(waMessageId, newBeerNumber, fields) {
   return { action: inserted?.length ? "inserted" : "noop", beer: inserted?.[0] ?? null };
 }
 
-// Sync current group members. participants: [{ participant: string, is_admin: boolean }]
+// Sync current group members. participants: [{ participant, lid, phone, is_admin }]
+// (participant = lid digits in a lid-addressed group; phone may be null).
 // Reconciles against the table: present members are (re)activated, anyone no
 // longer in the group is soft-deleted (left_at set). Beers and name resolution
 // are preserved — the row stays, just flagged.
@@ -79,16 +80,33 @@ export async function syncMembers(participants) {
   const now = new Date().toISOString();
   const present = participants.map((p) => p.participant);
 
-  const { error } = await supabase.from("members").upsert(
-    participants.map((p) => ({
-      participant: p.participant,
-      is_admin: p.is_admin,
-      synced_at: now,
-      left_at: null, // present in group → active (also un-leaves anyone who rejoined)
-    })),
-    { onConflict: "participant" },
-  );
-  if (error) throw error;
+  // Legacy merge: rows keyed by phone digits (pre-lid era) become the lid-keyed
+  // row for the same person, preserving member/push_name/left_at. One bulk read;
+  // the per-row updates fire once ever, then keys.has(p.participant) short-circuits.
+  const { data: existing, error: exErr } = await supabase.from("members").select("participant");
+  if (exErr) throw exErr;
+  const keys = new Set((existing ?? []).map((r) => r.participant));
+  for (const p of participants) {
+    if (!p.phone || p.phone === p.participant || keys.has(p.participant) || !keys.has(p.phone)) continue;
+    await supabase.from("members").update({ participant: p.participant }).eq("participant", p.phone);
+  }
+
+  // Two batches: PostgREST bulk upserts need uniform keys, and rows without a
+  // known phone must omit the column so they never null-out a stored phone.
+  const row = (p, withPhone) => ({
+    participant: p.participant,
+    lid: p.lid ?? p.participant,
+    ...(withPhone ? { phone: p.phone } : {}),
+    is_admin: p.is_admin,
+    synced_at: now,
+    left_at: null, // present in group → active (also un-leaves anyone who rejoined)
+  });
+  for (const withPhone of [true, false]) {
+    const batch = participants.filter((p) => !!p.phone === withPhone);
+    if (!batch.length) continue;
+    const { error } = await supabase.from("members").upsert(batch.map((p) => row(p, withPhone)), { onConflict: "participant" });
+    if (error) throw error;
+  }
 
   // Soft-delete members who are no longer in the group.
   const { error: leftErr } = await supabase.from("members")
@@ -100,10 +118,29 @@ export async function syncMembers(participants) {
   return participants.length;
 }
 
-// Keep members.push_name current whenever a live beer comes in.
-export async function updateMemberPushName(participant, pushName) {
-  if (!participant || !pushName) return;
-  await supabase.from("members").update({ push_name: pushName }).eq("participant", participant);
+// Update a member row from a live message: sets only the fields we actually
+// learned (never clobbers known data with null). Update-only — unknown senders
+// are picked up by the next syncMembers reconcile.
+export async function touchMember({ participant, phone, pushName }) {
+  if (!participant) return;
+  const fields = {};
+  if (pushName) fields.push_name = pushName;
+  if (phone) fields.phone = phone;
+  if (!Object.keys(fields).length) return;
+  await supabase.from("members").update(fields).eq("participant", participant);
+}
+
+// contacts.update carries an id that may be lid- or phone-format; match either
+// column. Update-only, so contacts from DMs/other groups never enter the table.
+export async function updatePushNameByAnyId(id, pushName) {
+  if (!id || !pushName) return;
+  await supabase.from("members").update({ push_name: pushName }).or(`participant.eq.${id},phone.eq.${id}`);
+}
+
+// chats.phoneNumberShare: explicit lid -> phone mapping from the server.
+export async function updateMemberPhone(participant, phone) {
+  if (!participant || !phone) return;
+  await supabase.from("members").update({ phone }).eq("participant", participant);
 }
 
 // Last N live beers (with wa_message_id) for startup audit.
