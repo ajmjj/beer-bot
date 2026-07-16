@@ -89,10 +89,11 @@ alter table members add column if not exists member    text;
 alter table members add column if not exists push_name text;
 alter table members add column if not exists left_at   timestamptz;
 -- The group is LID-addressed: participant holds the lid digits (what message
--- keys carry). lid mirrors it explicitly; phone is the real number, learned
--- from group metadata / participant_pn stanzas as the server provides it.
-alter table members add column if not exists lid   text;
+-- keys carry); phone is the real number, learned from group metadata /
+-- participant_pn stanzas as the server provides it.
 alter table members add column if not exists phone text;
+-- lid was a write-only mirror of participant (they only differ in phone-addressed groups); dropped.
+alter table members drop column if exists lid;
 
 -- Trigger: auto-set member = push_name (or masked phone) whenever it would be null.
 -- User-registered names (non-null member) are never overwritten by this.

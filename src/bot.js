@@ -43,7 +43,7 @@ function messageText(message) {
 }
 
 // Full member reconcile from group metadata: the group is lid-addressed, so
-// p.id/p.lid carry the lid and p.jid the phone number (when the server shares
+// p.id carries the lid and p.jid the phone number (when the server shares
 // it). Present members are upserted (rejoin clears left_at), absent ones are
 // soft-deleted. On fetch failure we log and keep the table as-is — never wipe.
 async function reconcileMembers(sock) {
@@ -52,7 +52,6 @@ async function reconcileMembers(sock) {
     const meta = await sock.groupMetadata(GROUP_JID);
     const n = await syncMembers(meta.participants.map((p) => ({
       participant: num(p.id),
-      lid: num(p.lid) || num(p.id),
       phone: num(p.jid),
       is_admin: !!p.admin,
     })));
