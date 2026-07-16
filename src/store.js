@@ -1,6 +1,7 @@
 // Supabase writer. Used by both the live bot and the backfill importer.
 import { createClient } from "@supabase/supabase-js";
 import { maskPhone } from "./parser.js";
+import { dbLog } from "./logger.js";
 
 const { SUPABASE_URL, SUPABASE_SECRET_KEY } = process.env;
 if (!SUPABASE_URL || !SUPABASE_SECRET_KEY) {
@@ -16,6 +17,7 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_SECRET_KEY, {
 // Returns the number of rows actually inserted.
 export async function insertBeers(entries) {
   if (!entries.length) return 0;
+  const t0 = Date.now();
   const rows = entries.map((e) => ({
     beer_number: e.beer_number,
     member: maskPhone(e.member),
@@ -31,17 +33,20 @@ export async function insertBeers(entries) {
     .upsert(rows, { onConflict: "beer_number", ignoreDuplicates: true })
     .select("beer_number");
   if (error) throw error;
+  dbLog.debug({ op: "insertBeers", attempted: rows.length, inserted: data?.length ?? 0, ms: Date.now() - t0 }, "db write");
   return data?.length ?? 0; // only newly-inserted rows come back
 }
 
 // Overwrite who a beer is attributed to (the chat message is ground truth). Returns the
 // row if changed, else null. Targets beer_number so it works for any source.
 export async function correctBeerMember(beerNumber, { participant, pushName, member }) {
+  const t0 = Date.now();
   const { data, error } = await supabase.from("beers")
     .update({ participant, push_name: pushName ?? null, member: maskPhone(member) })
     .eq("beer_number", beerNumber)
     .select("beer_number, member");
   if (error) throw error;
+  dbLog.debug({ op: "correctBeerMember", beer: beerNumber, changed: !!data?.length, ms: Date.now() - t0 }, "db write");
   return data?.[0] ?? null;
 }
 
@@ -49,10 +54,15 @@ export async function correctBeerMember(beerNumber, { participant, pushName, mem
 // (or insert if the original message wasn't tracked).
 // Returns { action: 'deleted'|'updated'|'inserted'|'noop', beer }
 export async function handleBeerEdit(waMessageId, newBeerNumber, fields) {
+  const t0 = Date.now();
+  const done = (result) => {
+    dbLog.debug({ op: "handleBeerEdit", id: waMessageId, action: result.action, ms: Date.now() - t0 }, "db write");
+    return result;
+  };
   if (newBeerNumber === null) {
     const { data, error } = await supabase.from("beers").delete().eq("wa_message_id", waMessageId).select("beer_number, member");
     if (error) throw error;
-    return { action: data?.length ? "deleted" : "noop", beer: data?.[0] ?? null };
+    return done({ action: data?.length ? "deleted" : "noop", beer: data?.[0] ?? null });
   }
 
   const { data: updated, error: ue } = await supabase.from("beers")
@@ -60,14 +70,14 @@ export async function handleBeerEdit(waMessageId, newBeerNumber, fields) {
     .eq("wa_message_id", waMessageId)
     .select("beer_number");
   if (ue) throw ue;
-  if (updated?.length) return { action: "updated", beer: updated[0] };
+  if (updated?.length) return done({ action: "updated", beer: updated[0] });
 
   // Original message wasn't tracked (was skipped) — insert fresh.
   const { data: inserted, error: ie } = await supabase.from("beers")
     .insert({ beer_number: newBeerNumber, ...fields, source: "live", wa_message_id: waMessageId })
     .select("beer_number");
   if (ie) throw ie;
-  return { action: inserted?.length ? "inserted" : "noop", beer: inserted?.[0] ?? null };
+  return done({ action: inserted?.length ? "inserted" : "noop", beer: inserted?.[0] ?? null });
 }
 
 // Sync current group members. participants: [{ participant, phone, is_admin }]
@@ -77,6 +87,8 @@ export async function handleBeerEdit(waMessageId, newBeerNumber, fields) {
 // are preserved — the row stays, just flagged.
 export async function syncMembers(participants) {
   if (!participants.length) return 0;
+  const t0 = Date.now();
+  let merged = 0;
   const now = new Date().toISOString();
   const present = participants.map((p) => p.participant);
 
@@ -89,6 +101,7 @@ export async function syncMembers(participants) {
   for (const p of participants) {
     if (!p.phone || p.phone === p.participant || keys.has(p.participant) || !keys.has(p.phone)) continue;
     await supabase.from("members").update({ participant: p.participant }).eq("participant", p.phone);
+    merged++;
   }
 
   // Two batches: PostgREST bulk upserts need uniform keys, and rows without a
@@ -108,12 +121,14 @@ export async function syncMembers(participants) {
   }
 
   // Soft-delete members who are no longer in the group.
-  const { error: leftErr } = await supabase.from("members")
+  const { data: left, error: leftErr } = await supabase.from("members")
     .update({ left_at: now })
     .is("left_at", null)
-    .not("participant", "in", `(${present.map((p) => `"${p}"`).join(",")})`);
+    .not("participant", "in", `(${present.map((p) => `"${p}"`).join(",")})`)
+    .select("participant");
   if (leftErr) throw leftErr;
 
+  dbLog.debug({ op: "syncMembers", members: participants.length, merged, left: left?.length ?? 0, ms: Date.now() - t0 }, "db write");
   return participants.length;
 }
 
@@ -126,29 +141,39 @@ export async function touchMember({ participant, phone, pushName }) {
   if (pushName) fields.push_name = pushName;
   if (phone) fields.phone = phone;
   if (!Object.keys(fields).length) return;
+  const t0 = Date.now();
   await supabase.from("members").update(fields).eq("participant", participant);
+  dbLog.debug({ op: "touchMember", participant, fields: Object.keys(fields), ms: Date.now() - t0 }, "db write");
 }
 
 // contacts.update carries an id that may be lid- or phone-format; match either
 // column. Update-only, so contacts from DMs/other groups never enter the table.
 export async function updatePushNameByAnyId(id, pushName) {
   if (!id || !pushName) return;
+  const t0 = Date.now();
   await supabase.from("members").update({ push_name: pushName }).or(`participant.eq.${id},phone.eq.${id}`);
+  dbLog.debug({ op: "updatePushNameByAnyId", id, pushName, ms: Date.now() - t0 }, "db write");
 }
 
 // chats.phoneNumberShare: explicit lid -> phone mapping from the server.
 export async function updateMemberPhone(participant, phone) {
   if (!participant || !phone) return;
+  const t0 = Date.now();
   await supabase.from("members").update({ phone }).eq("participant", participant);
+  dbLog.debug({ op: "updateMemberPhone", participant, ms: Date.now() - t0 }, "db write");
 }
 
 // Last N live beers (with wa_message_id) for startup audit.
 export async function getMaxBeerNumber() {
+  const t0 = Date.now();
   const { data } = await supabase.from("beers").select("beer_number").order("beer_number", { ascending: false }).limit(1);
-  return data?.[0]?.beer_number ?? 0;
+  const max = data?.[0]?.beer_number ?? 0;
+  dbLog.debug({ op: "getMaxBeerNumber", max, ms: Date.now() - t0 }, "db read");
+  return max;
 }
 
 export async function getLastBeers(n = 10) {
+  const t0 = Date.now();
   const { data, error } = await supabase
     .from("beers")
     .select("beer_number, member, wa_message_id, ts")
@@ -156,24 +181,28 @@ export async function getLastBeers(n = 10) {
     .order("beer_number", { ascending: false })
     .limit(n);
   if (error) throw error;
+  dbLog.debug({ op: "getLastBeers", count: data?.length ?? 0, ms: Date.now() - t0 }, "db read");
   return data ?? [];
 }
 
 // Best-effort display name for a phone number, from any beer that person has posted.
 export async function getMemberName(participant) {
   if (!participant) return null;
+  const t0 = Date.now();
   const { data } = await supabase
     .from("beers")
     .select("push_name")
     .eq("participant", participant)
     .not("push_name", "is", null)
     .limit(1);
+  dbLog.debug({ op: "getMemberName", participant, found: !!data?.length, ms: Date.now() - t0 }, "db read");
   return data?.[0]?.push_name ?? null;
 }
 
 // Hard-delete the beer for a revoked WhatsApp message and log it in deleted_beers.
 // Returns the matched beer ({ beer_number, member }) or null if it wasn't a tracked live beer.
 export async function markBeerDeleted(waMessageId, deletedBy, deletedByName, byAdmin) {
+  const t0 = Date.now();
   const { data, error } = await supabase
     .from("beers")
     .delete()
@@ -181,6 +210,7 @@ export async function markBeerDeleted(waMessageId, deletedBy, deletedByName, byA
     .select("beer_number, member");
   if (error) throw error;
   const beer = data?.[0];
+  dbLog.debug({ op: "markBeerDeleted", id: waMessageId, matched: !!beer, ms: Date.now() - t0 }, "db write");
   if (!beer) return null;
 
   const { error: logErr } = await supabase.from("deleted_beers").insert({

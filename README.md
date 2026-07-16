@@ -91,10 +91,14 @@ First run, the bot prints a QR code (or a pairing code if `PAIR_NUMBER` is set) 
 link it under WhatsApp → Linked Devices. If `GROUP_JID` is unset, it logs the
 groups it sees; copy the right `…@g.us` JID into `.env` and restart.
 
-**Logging**: `LOG_LEVEL` sets the bot's own verbosity (`info` by default);
-`BAILEYS_LOG_LEVEL` does the same for the underlying Baileys library, which is
-noisy at anything above `warn`. `LOG_EVENTS=1` dumps every raw Baileys event
-(implies `debug`) — useful when tracing a message the parser mishandled.
+**Logging**: `LOG_LEVEL` sets the bot's own verbosity (`info` by default).
+At `info` you get business outcomes (beer recorded/deleted/edited, members
+synced); `LOG_LEVEL=debug` adds the interpreted trail — every processed message
+(kind, sender, guard decision) and every Supabase operation (op, rows affected,
+duration, tagged `module: "db"`). `BAILEYS_LOG_LEVEL` does the same for the
+underlying Baileys library, which is noisy at anything above `warn`.
+`LOG_EVENTS=1` dumps every raw Baileys event with full payload (implies
+`debug`) — useful when tracing a message the parser mishandled.
 Use `npm run bot:log` instead of `npm run bot` to get plain-text lines (via
 [scripts/pretty-log.js](scripts/pretty-log.js)) appended to `beer-bot.log`,
 in a format line-based log viewers like Lumen can tail.

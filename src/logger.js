@@ -1,0 +1,5 @@
+// Shared pino instance. LOG_LEVEL overrides; LOG_EVENTS implies debug.
+import pino from "pino";
+
+export const log = pino({ level: process.env.LOG_LEVEL || (process.env.LOG_EVENTS ? "debug" : "info") });
+export const dbLog = log.child({ module: "db" });
