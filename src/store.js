@@ -70,7 +70,7 @@ export async function handleBeerEdit(waMessageId, newBeerNumber, fields) {
   return { action: inserted?.length ? "inserted" : "noop", beer: inserted?.[0] ?? null };
 }
 
-// Sync current group members. participants: [{ participant, lid, phone, is_admin }]
+// Sync current group members. participants: [{ participant, phone, is_admin }]
 // (participant = lid digits in a lid-addressed group; phone may be null).
 // Reconciles against the table: present members are (re)activated, anyone no
 // longer in the group is soft-deleted (left_at set). Beers and name resolution
@@ -95,7 +95,6 @@ export async function syncMembers(participants) {
   // known phone must omit the column so they never null-out a stored phone.
   const row = (p, withPhone) => ({
     participant: p.participant,
-    lid: p.lid ?? p.participant,
     ...(withPhone ? { phone: p.phone } : {}),
     is_admin: p.is_admin,
     synced_at: now,
