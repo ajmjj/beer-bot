@@ -6,8 +6,8 @@ import makeWASocket, {
   fetchLatestBaileysVersion,
   proto,
 } from "@whiskeysockets/baileys";
-import pino from "pino";
 import qrcode from "qrcode-terminal";
+import { log } from "./logger.js";
 import { parseBeer } from "./parser.js";
 import { guardDecision } from "./guard.js";
 import { acquireSessionLock } from "./session-lock.js";
@@ -20,18 +20,29 @@ const num = (jid) => (jid ? jid.split("@")[0].split(":")[0] : null); // jid -> b
 const GROUP_JID = process.env.GROUP_JID || null;
 const MAX_SKIP = 5; // reject beer numbers more than this far ahead of current max
 const PAIR_NUMBER = process.env.PAIR_NUMBER || null; // optional: e.g. 491701234567 for pairing-code login
-const log = pino({ level: process.env.LOG_LEVEL || (process.env.LOG_EVENTS ? "debug" : "info") });
 const baileysLogger = log.child({ module: "baileys" }, { level: process.env.BAILEYS_LOG_LEVEL || "warn" });
 
+// Unwrap container types: HD images (viewOnceMessageV2), live photos (viewOnceMessage),
+// docs-with-caption, and disappearing messages all nest the real message one level down.
+const unwrap = (message) =>
+  message?.ephemeralMessage?.message ??
+  message?.viewOnceMessage?.message ??
+  message?.viewOnceMessageV2?.message ??
+  message?.documentWithCaptionMessage?.message ??
+  message;
+
+// Content type of a message for debug logging, e.g. "imageMessage" or "protocolMessage:REVOKE".
+function messageKind(message) {
+  const m = unwrap(message);
+  const kind = Object.keys(m ?? {}).find((k) => k !== "messageContextInfo") ?? "empty";
+  if (kind !== "protocolMessage") return kind;
+  const t = m.protocolMessage?.type;
+  const name = Object.keys(proto.Message.ProtocolMessage.Type).find((k) => proto.Message.ProtocolMessage.Type[k] === t);
+  return `protocolMessage:${name ?? t}`;
+}
+
 function messageText(message) {
-  // Unwrap container types: HD images (viewOnceMessageV2), live photos (viewOnceMessage),
-  // docs-with-caption, and disappearing messages all nest the real message one level down.
-  const m =
-    message?.ephemeralMessage?.message ??
-    message?.viewOnceMessage?.message ??
-    message?.viewOnceMessageV2?.message ??
-    message?.documentWithCaptionMessage?.message ??
-    message;
+  const m = unwrap(message);
   return (
     m?.conversation ||
     m?.extendedTextMessage?.text ||
@@ -231,6 +242,8 @@ async function start() {
       }
       if (jid !== GROUP_JID) continue;
 
+      log.debug({ id: msg.key.id, kind: messageKind(msg.message), member: msg.pushName || num(msg.key.participant), catchup }, "message received");
+
       // Keep the sender's member row current: pushName from the stanza, phone
       // from participantPn (the only live source of phone numbers in a
       // lid-addressed group). Fire-and-forget so beer handling never waits.
@@ -274,6 +287,7 @@ async function start() {
       // ponytail: a lone typo runs ahead once; a real offline jump is confirmed by the next nearby beer.
       // Ceiling: two typos within MAX_SKIP of each other could slip through — tighten to N confirmations if it bites.
       const decision = guardDecision(beer_number, maxKnown, pendingHigh, MAX_SKIP);
+      log.debug({ beer: beer_number, max: maxKnown, decision }, "guard decision");
       if (decision === "hold") {
         pendingHigh = entry;
         log.warn({ beer: beer_number, member, max: maxKnown }, "beer ran ahead; awaiting confirmation");
@@ -310,6 +324,7 @@ async function start() {
           .catch((err) => log.warn({ err }, "member touch failed"));
       }
       const edited = u.update?.message?.editedMessage?.message;
+      log.debug({ id: u.key.id, edit: !!edited }, "message update");
       if (!edited) continue; // status/receipt update, not an edit
       const ts = new Date(Number(u.update.messageTimestamp || Math.floor(Date.now() / 1000)) * 1000);
       await handleEdit(u.key.id, messageText(edited), ts, u.pushName, num(u.key.participant));
@@ -337,8 +352,9 @@ async function start() {
   // the leaver; after an add/modify it picks up the new lid+phone mapping
   // (the event itself only carries one JID form).
   // ponytail: one metadata fetch per membership event; fine for a single group.
-  sock.ev.on("group-participants.update", async ({ id }) => {
+  sock.ev.on("group-participants.update", async ({ id, action, participants }) => {
     if (id !== GROUP_JID) return;
+    log.debug({ action, participants: participants?.map(num) }, "group participants update");
     await reconcileMembers(sock);
   });
 }
