@@ -11,7 +11,7 @@ import qrcode from "qrcode-terminal";
 import { parseBeer } from "./parser.js";
 import { guardDecision } from "./guard.js";
 import { acquireSessionLock } from "./session-lock.js";
-import { insertBeers, markBeerDeleted, getMemberName, handleBeerEdit, getLastBeers, getMaxBeerNumber } from "./store.js";
+import { insertBeers, markBeerDeleted, getMemberName, handleBeerEdit, getLastBeers, getMaxBeerNumber, syncMembers, touchMember, updatePushNameByAnyId, updateMemberPhone } from "./store.js";
 
 const REVOKE = proto.Message.ProtocolMessage.Type.REVOKE;
 const MESSAGE_EDIT = proto.Message.ProtocolMessage.Type.MESSAGE_EDIT;
@@ -40,6 +40,26 @@ function messageText(message) {
     m?.documentMessage?.caption ||
     ""
   );
+}
+
+// Full member reconcile from group metadata: the group is lid-addressed, so
+// p.id/p.lid carry the lid and p.jid the phone number (when the server shares
+// it). Present members are upserted (rejoin clears left_at), absent ones are
+// soft-deleted. On fetch failure we log and keep the table as-is — never wipe.
+async function reconcileMembers(sock) {
+  if (!GROUP_JID) return;
+  try {
+    const meta = await sock.groupMetadata(GROUP_JID);
+    const n = await syncMembers(meta.participants.map((p) => ({
+      participant: num(p.id),
+      lid: num(p.lid) || num(p.id),
+      phone: num(p.jid),
+      is_admin: !!p.admin,
+    })));
+    log.info({ members: n }, "members synced");
+  } catch (err) {
+    log.error({ err }, "member sync failed");
+  }
 }
 
 async function start() {
@@ -166,6 +186,7 @@ async function start() {
     }
     if (connection === "open") {
       log.info({ group: GROUP_JID }, GROUP_JID ? "connected" : "connected — no GROUP_JID set, logging group JIDs");
+      reconcileMembers(sock); // catches joins/leaves that happened while offline
       if (GROUP_JID) {
         try {
           const lastBeers = await getLastBeers(10);
@@ -210,6 +231,14 @@ async function start() {
         continue;
       }
       if (jid !== GROUP_JID) continue;
+
+      // Keep the sender's member row current: pushName from the stanza, phone
+      // from participantPn (the only live source of phone numbers in a
+      // lid-addressed group). Fire-and-forget so beer handling never waits.
+      if (!msg.key.fromMe) {
+        touchMember({ participant: num(msg.key.participant), phone: num(msg.key.participantPn), pushName: msg.pushName })
+          .catch((err) => log.warn({ err }, "member touch failed"));
+      }
 
       // Delete-for-everyone: a REVOKE protocol message naming the deleted message.
       if (msg.message?.protocolMessage?.type === REVOKE) {
@@ -276,11 +305,42 @@ async function start() {
   sock.ev.on("messages.update", async (updates) => {
     for (const u of updates) {
       if (u.key?.remoteJid !== GROUP_JID) continue;
+      if (!u.key.fromMe) {
+        // Best effort: pushName is rarely present on updates, participantPn sometimes is.
+        touchMember({ participant: num(u.key.participant), phone: num(u.key.participantPn), pushName: u.update?.pushName })
+          .catch((err) => log.warn({ err }, "member touch failed"));
+      }
       const edited = u.update?.message?.editedMessage?.message;
       if (!edited) continue; // status/receipt update, not an edit
       const ts = new Date(Number(u.update.messageTimestamp || Math.floor(Date.now() / 1000)) * 1000);
       await handleEdit(u.key.id, messageText(edited), ts, u.pushName, num(u.key.participant));
     }
+  });
+
+  // Baileys synthesizes contacts.update (id + notify = pushName) for every
+  // push-named incoming message; picture-only updates carry no notify and are
+  // skipped. The id may be lid- or phone-format; the store matches both.
+  // Update-only, so contacts from DMs/other groups never enter the table.
+  sock.ev.on("contacts.update", async (contacts) => {
+    for (const c of contacts) {
+      if (!c.notify) continue;
+      await updatePushNameByAnyId(num(c.id), c.notify).catch((err) => log.warn({ err }, "push name update failed"));
+    }
+  });
+
+  // Explicit lid -> phone mapping pushed by the server.
+  sock.ev.on("chats.phoneNumberShare", async ({ lid, jid }) => {
+    await updateMemberPhone(num(lid), num(jid)).catch((err) => log.warn({ err }, "phone share update failed"));
+  });
+
+  // Membership changes (add/remove/promote/demote/number change): re-sync from
+  // fresh metadata. One code path — after a remove the reconcile soft-deletes
+  // the leaver; after an add/modify it picks up the new lid+phone mapping
+  // (the event itself only carries one JID form).
+  // ponytail: one metadata fetch per membership event; fine for a single group.
+  sock.ev.on("group-participants.update", async ({ id }) => {
+    if (id !== GROUP_JID) return;
+    await reconcileMembers(sock);
   });
 }
 

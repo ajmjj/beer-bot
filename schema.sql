@@ -77,17 +77,22 @@ create table if not exists members (
   synced_at    timestamptz default now(),
   left_at      timestamptz         -- soft delete: set when they leave the group, null = active
 );
+-- No public read: members stores raw phone numbers and nothing public reads
+-- the table (the dashboard uses v_member_stats, which reads beers). The bot
+-- accesses it with the secret key, which bypasses RLS.
 alter table members enable row level security;
 drop policy if exists "public read" on members;
-create policy "public read" on members for select using (true);
-grant select on members to anon, authenticated;
+revoke select on members from anon, authenticated;
 
 -- Add columns to existing installs (safe no-ops if columns already exist).
 alter table members add column if not exists member    text;
 alter table members add column if not exists push_name text;
 alter table members add column if not exists left_at   timestamptz;
--- phone was a redundant copy of participant, read by nothing — drop it.
-alter table members drop column if exists phone;
+-- The group is LID-addressed: participant holds the lid digits (what message
+-- keys carry). lid mirrors it explicitly; phone is the real number, learned
+-- from group metadata / participant_pn stanzas as the server provides it.
+alter table members add column if not exists lid   text;
+alter table members add column if not exists phone text;
 
 -- Trigger: auto-set member = push_name (or masked phone) whenever it would be null.
 -- User-registered names (non-null member) are never overwritten by this.
