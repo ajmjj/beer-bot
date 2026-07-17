@@ -22,7 +22,7 @@ export async function insertBeers(entries) {
     beer_number: e.beer_number,
     member: maskPhone(e.member),
     push_name: e.push_name ?? null, // null for backfill/manual; set on live
-    participant: e.participant ?? null,
+    participant: e.participant?.trim() || null, // trim: manual inserts have pasted ids with stray whitespace
     ts: e.ts instanceof Date ? e.ts.toISOString() : e.ts,
     raw_caption: e.raw_caption ?? null,
     source: e.source ?? "live",
@@ -132,17 +132,18 @@ export async function syncMembers(participants) {
   return participants.length;
 }
 
-// Update a member row from a live message: sets only the fields we actually
-// learned (never clobbers known data with null). Update-only — unknown senders
-// are picked up by the next syncMembers reconcile.
+// Upsert a member row from a live message: sets only the fields we actually
+// learned (never clobbers known data with null). Creating missing rows here
+// makes members self-healing when syncMembers fails or someone joins, posts
+// and leaves between two successful reconciles. A message in the group is
+// proof of membership; defaults/trigger fill is_admin, member and left_at.
 export async function touchMember({ participant, phone, pushName }) {
   if (!participant) return;
-  const fields = {};
+  const fields = { participant };
   if (pushName) fields.push_name = pushName;
   if (phone) fields.phone = phone;
-  if (!Object.keys(fields).length) return;
   const t0 = Date.now();
-  await supabase.from("members").update(fields).eq("participant", participant);
+  await supabase.from("members").upsert(fields, { onConflict: "participant" });
   dbLog.debug({ op: "touchMember", participant, fields: Object.keys(fields), ms: Date.now() - t0 }, "db write");
 }
 
