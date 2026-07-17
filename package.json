@@ -13,7 +13,7 @@
     "backfill": "node scripts/backfill.js",
     "gaps": "node scripts/gaps.js",
     "match-gaps": "node scripts/match-gaps.js",
-    "sync-gaps": "node scripts/sync-gaps.js",
+    "backcrawl-chat": "node scripts/backcrawl-chat/backcrawl-chat.js",
     "mismatches": "node scripts/mismatches.js",
     "test": "node src/parser.js"
   },
