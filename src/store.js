@@ -160,7 +160,7 @@ export async function updatePushNameByAnyId(id, pushName) {
 export async function updateMemberPhone(participant, phone) {
   if (!participant || !phone) return;
   const t0 = Date.now();
-  await supabase.from("members").update({ phone }).eq("participant", participant);
+  await supabase.from("members").upsert({ participant, phone }, { onConflict: "participant" });
   dbLog.debug({ op: "updateMemberPhone", participant, ms: Date.now() - t0 }, "db write");
 }
 
