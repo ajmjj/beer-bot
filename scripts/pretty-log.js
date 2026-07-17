@@ -14,6 +14,7 @@ import { prettyFactory } from "pino-pretty";
 const pretty = prettyFactory({
   translateTime: "yyyy-mm-dd HH:MM:ss.l",
   customPrettifiers: { time: (t) => t },
+  singleLine: true,
 });
 
 createInterface({ input: process.stdin }).on("line", (line) => {

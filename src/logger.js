@@ -3,3 +3,7 @@ import pino from "pino";
 
 export const log = pino({ level: process.env.LOG_LEVEL || (process.env.LOG_EVENTS ? "debug" : "info") });
 export const dbLog = log.child({ module: "db" });
+
+// Redirect console.error to pino so dependencies (e.g. libsignal) get timestamps.
+const _consoleError = console.error.bind(console);
+console.error = (...args) => log.error(args.map(String).join(" "));
