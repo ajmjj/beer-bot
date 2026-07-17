@@ -17,6 +17,10 @@ chat_exports/*
 # Local planning notes — keep out of the repo
 .claude/
 
+# Crawl output files — generated, never commit
+scripts/backcrawl-chat/output/
+scripts/history-sync/output/
+
 # WhatsApp session lock + any moved-aside session backups — runtime only, never commit
 .baileys_auth.lock
 .baileys_auth.sync.lock
