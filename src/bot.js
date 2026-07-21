@@ -10,12 +10,28 @@ import qrcode from "qrcode-terminal";
 import { log } from "./logger.js";
 import { parseBeer } from "./parser.js";
 import { guardDecision } from "./guard.js";
+import { decryptEdit } from "./edit-crypto.js";
 import { acquireSessionLock } from "./session-lock.js";
 import { insertBeers, markBeerDeleted, getMemberName, handleBeerEdit, getLastBeers, getMaxBeerNumber, syncMembers, touchMember, updatePushNameByAnyId, updateMemberPhone } from "./store.js";
 
 const REVOKE = proto.Message.ProtocolMessage.Type.REVOKE;
 const MESSAGE_EDIT = proto.Message.ProtocolMessage.Type.MESSAGE_EDIT;
+const SECRET_MESSAGE_EDIT = proto.Message.SecretEncryptedMessage.SecretEncType.MESSAGE_EDIT;
 const num = (jid) => (jid ? jid.split("@")[0].split(":")[0] : null); // jid -> bare number
+
+// Edits arrive encrypted with the ORIGINAL message's messageSecret, so we retain each
+// incoming message's secret keyed by its id. WhatsApp caps edits at 15 min from the
+// original; 30 min TTL gives margin. Tiny (32 bytes/entry) and swept lazily.
+const EDIT_SECRET_TTL_MS = 30 * 60 * 1000;
+const editSecrets = new Map(); // wa_message_id -> { secret: Uint8Array, ts: number }
+function rememberSecret(id, secret) {
+  if (!id || !secret) return;
+  editSecrets.set(id, { secret, ts: Date.now() });
+  if (editSecrets.size > 1000) {
+    const cutoff = Date.now() - EDIT_SECRET_TTL_MS;
+    for (const [k, v] of editSecrets) if (v.ts < cutoff) editSecrets.delete(k);
+  }
+}
 
 const GROUP_JID = process.env.GROUP_JID || null;
 const MAX_SKIP = 5; // reject beer numbers more than this far ahead of current max
@@ -252,6 +268,9 @@ async function start() {
           .catch((err) => log.warn({ err }, "member touch failed"));
       }
 
+      // Retain this message's secret so we can decrypt a later edit of it.
+      rememberSecret(msg.key.id, unwrap(msg.message)?.messageContextInfo?.messageSecret);
+
       // Delete-for-everyone: a REVOKE protocol message naming the deleted message.
       if (msg.message?.protocolMessage?.type === REVOKE) {
         await handleDeletion(sock, msg);
@@ -262,6 +281,31 @@ async function start() {
       if (msg.message?.protocolMessage?.type === MESSAGE_EDIT) {
         const p = msg.message.protocolMessage;
         await handleEdit(p.key?.id, messageText(p.editedMessage), new Date(Number(msg.messageTimestamp) * 1000), msg.pushName, num(msg.key.participant));
+        continue;
+      }
+
+      // Encrypted edit: the real live-edit path. Decrypt with the original message's
+      // stored secret, then route to the same handler as a plaintext edit.
+      const secretEdit = unwrap(msg.message)?.secretEncryptedMessage;
+      if (secretEdit?.secretEncType === SECRET_MESSAGE_EDIT) {
+        const targetId = secretEdit.targetMessageKey?.id;
+        const held = targetId && editSecrets.get(targetId);
+        if (!held) {
+          log.info({ id: targetId }, "encrypted edit but original secret not cached — skipping");
+          continue;
+        }
+        // Sender JID is the LID form "<lid>@lid" (confirmed empirically); PN form is a
+        // fallback for phone-addressed senders. A wrong candidate just fails GCM auth.
+        const senderJids = [
+          num(msg.key.participant) && `${num(msg.key.participant)}@lid`,
+          num(msg.key.participantPn) && `${num(msg.key.participantPn)}@s.whatsapp.net`,
+        ].filter(Boolean);
+        const edited = decryptEdit({ secret: held.secret, encPayload: secretEdit.encPayload, encIv: secretEdit.encIv, targetId, senderJids });
+        if (!edited) {
+          log.warn({ id: targetId }, "encrypted edit decrypt failed (no sender jid matched)");
+          continue;
+        }
+        await handleEdit(targetId, messageText(edited), new Date(Number(msg.messageTimestamp) * 1000), msg.pushName, num(msg.key.participant));
         continue;
       }
 
@@ -372,10 +416,11 @@ async function handleEdit(originalId, newText, ts, pushName, participant) {
 
   try {
     const result = await handleBeerEdit(originalId, beer_number, fields);
-    if (result.action === "deleted") log.info({ beer: result.beer?.beer_number, member: result.beer?.member }, "edit to non-number: hard deleted beer");
-    else if (result.action === "updated") log.info({ id: originalId, beer: beer_number }, "edit updated beer");
-    else if (result.action === "inserted") log.info({ beer: beer_number }, "edit created new beer");
-    else log.info({ id: originalId }, "edit for untracked message ignored");
+    if (result.action === "deleted") log.info({ beer: result.beer?.beer_number, member: result.beer?.member, id: originalId, text: newText }, "edit to non-number: hard deleted beer");
+    else if (result.action === "updated") log.info({ id: originalId, beer: beer_number, member: result.beer?.member, text: newText }, "edit updated beer");
+    else if (result.action === "inserted") log.info({ id: originalId, beer: beer_number, member: result.beer?.member, text: newText }, "edit created new beer");
+    else if (result.action === "conflict") log.warn({ id: originalId, beer: beer_number, text: newText }, "edit target number already taken — dropped");
+    else log.info({ id: originalId, text: newText }, "edit for untracked message ignored");
   } catch (err) {
     log.error({ id: originalId, err }, "edit handling failed");
   }

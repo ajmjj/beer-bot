@@ -18,6 +18,23 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_SECRET_KEY, {
 export async function insertBeers(entries) {
   if (!entries.length) return 0;
   const t0 = Date.now();
+
+  // Dedupe by message: skip any entry whose wa_message_id is already recorded. Without
+  // this, a redelivered original re-inserts at a number an edit had freed up, creating a
+  // phantom second row for the one message. Entries without an id (backfill/manual) pass through.
+  // ponytail: app-level check, tiny race window; fine for the single-process bot.
+  const ids = entries.map((e) => e.wa_message_id).filter(Boolean);
+  if (ids.length) {
+    const { data: existing, error: exErr } = await supabase.from("beers").select("wa_message_id").in("wa_message_id", ids);
+    if (exErr) throw exErr;
+    const seen = new Set((existing ?? []).map((r) => r.wa_message_id));
+    entries = entries.filter((e) => !e.wa_message_id || !seen.has(e.wa_message_id));
+    if (!entries.length) {
+      dbLog.debug({ op: "insertBeers", attempted: ids.length, inserted: 0, skipped: "duplicate wa_message_id", ms: Date.now() - t0 }, "db write");
+      return 0;
+    }
+  }
+
   const rows = entries.map((e) => ({
     beer_number: e.beer_number,
     member: maskPhone(e.member),
@@ -52,31 +69,36 @@ export async function correctBeerMember(beerNumber, { participant, pushName, mem
 
 // Handle a message edit. If newBeerNumber is null, hard-delete the row. Otherwise update it
 // (or insert if the original message wasn't tracked).
-// Returns { action: 'deleted'|'updated'|'inserted'|'noop', beer }
+// Returns { action: 'deleted'|'updated'|'inserted'|'conflict'|'noop', beer }
+// 'conflict': the new number already belongs to another beer (unique violation) — the
+// edit is dropped non-fatally rather than throwing and losing it silently.
 export async function handleBeerEdit(waMessageId, newBeerNumber, fields) {
   const t0 = Date.now();
   const done = (result) => {
     dbLog.debug({ op: "handleBeerEdit", id: waMessageId, action: result.action, ms: Date.now() - t0 }, "db write");
     return result;
   };
+  const isConflict = (err) => err?.code === "23505"; // Postgres unique_violation on beer_number
   if (newBeerNumber === null) {
     const { data, error } = await supabase.from("beers").delete().eq("wa_message_id", waMessageId).select("beer_number, member");
     if (error) throw error;
     return done({ action: data?.length ? "deleted" : "noop", beer: data?.[0] ?? null });
   }
 
+  // Don't overwrite the original ts: an edit keeps the beer's original day (beer_date).
+  const { ts, ...updateFields } = fields;
   const { data: updated, error: ue } = await supabase.from("beers")
-    .update({ beer_number: newBeerNumber, ...fields })
+    .update({ beer_number: newBeerNumber, ...updateFields })
     .eq("wa_message_id", waMessageId)
-    .select("beer_number");
-  if (ue) throw ue;
+    .select("beer_number, member");
+  if (ue) { if (isConflict(ue)) return done({ action: "conflict", beer: null }); throw ue; }
   if (updated?.length) return done({ action: "updated", beer: updated[0] });
 
-  // Original message wasn't tracked (was skipped) — insert fresh.
+  // Original message wasn't tracked (was skipped/deleted) — insert fresh (keeps ts).
   const { data: inserted, error: ie } = await supabase.from("beers")
     .insert({ beer_number: newBeerNumber, ...fields, source: "live", wa_message_id: waMessageId })
-    .select("beer_number");
-  if (ie) throw ie;
+    .select("beer_number, member");
+  if (ie) { if (isConflict(ie)) return done({ action: "conflict", beer: null }); throw ie; }
   return done({ action: inserted?.length ? "inserted" : "noop", beer: inserted?.[0] ?? null });
 }
 
