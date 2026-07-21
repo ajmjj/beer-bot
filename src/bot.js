@@ -9,10 +9,10 @@ import makeWASocket, {
 import qrcode from "qrcode-terminal";
 import { log } from "./logger.js";
 import { parseBeer } from "./parser.js";
-import { guardDecision } from "./guard.js";
 import { decryptEdit } from "./edit-crypto.js";
+import { flushDue } from "./buffer.js";
 import { acquireSessionLock } from "./session-lock.js";
-import { insertBeers, markBeerDeleted, getMemberName, handleBeerEdit, getLastBeers, getMaxBeerNumber, syncMembers, touchMember, updatePushNameByAnyId, updateMemberPhone } from "./store.js";
+import { insertBeers, markBeerDeleted, getMemberName, handleBeerEdit, getLastBeers, syncMembers, touchMember, updatePushNameByAnyId, updateMemberPhone, stagePending, getPending, patchPending, deletePending } from "./store.js";
 
 const REVOKE = proto.Message.ProtocolMessage.Type.REVOKE;
 const MESSAGE_EDIT = proto.Message.ProtocolMessage.Type.MESSAGE_EDIT;
@@ -34,7 +34,8 @@ function rememberSecret(id, secret) {
 }
 
 const GROUP_JID = process.env.GROUP_JID || null;
-const MAX_SKIP = 5; // reject beer numbers more than this far ahead of current max
+const EDIT_WINDOW_MS = Number(process.env.EDIT_WINDOW_MS) || (15 * 60 + 30) * 1000; // WhatsApp edit window + margin
+const FLUSH_INTERVAL_MS = Number(process.env.FLUSH_INTERVAL_MS) || 30_000; // staging flush sweep cadence
 const PAIR_NUMBER = process.env.PAIR_NUMBER || null; // optional: e.g. 491701234567 for pairing-code login
 const baileysLogger = log.child({ module: "baileys" }, { level: process.env.BAILEYS_LOG_LEVEL || "warn" });
 
@@ -118,10 +119,6 @@ async function start() {
   // Resolved when connection opens; the history handler awaits it to avoid a race.
   let resolveAudit;
   let startupAuditPromise = new Promise((r) => { resolveAudit = r; });
-
-  // A beer number that ran ahead of the known max, held until a second nearby beer confirms
-  // it's a real jump (offline gap) rather than a typo. Reset each connection.
-  let pendingHigh = null;
 
   // On reconnect, compare the last 10 tracked beers against WhatsApp history:
   // catch offline deletions/edits and insert any new beers we missed.
@@ -316,43 +313,22 @@ async function start() {
         if (text.trim()) log.info({ member, text: text.slice(0, 60) }, "skipped non-beer message");
         continue;
       }
-      const entry = {
-        beer_number,
-        member,
-        push_name: msg.pushName ?? null,
-        participant: num(msg.key.participant),
-        ts: new Date(Number(msg.messageTimestamp) * 1000),
-        raw_caption: text,
-        source: "live",
-        wa_message_id: msg.key.id,
-      };
-
-      const maxKnown = await getMaxBeerNumber();
-      // ponytail: a lone typo runs ahead once; a real offline jump is confirmed by the next nearby beer.
-      // Ceiling: two typos within MAX_SKIP of each other could slip through — tighten to N confirmations if it bites.
-      const decision = guardDecision(beer_number, maxKnown, pendingHigh, MAX_SKIP);
-      log.debug({ beer: beer_number, max: maxKnown, decision }, "guard decision");
-      if (decision === "hold") {
-        pendingHigh = entry;
-        log.warn({ beer: beer_number, member, max: maxKnown }, "beer ran ahead; awaiting confirmation");
-        continue;
-      }
-      if (decision === "confirm") {
-        try {
-          await insertBeers([pendingHigh]);
-          log.info({ beer: pendingHigh.beer_number }, "confirmed jump, resuming live counting");
-        } catch (err) {
-          log.error({ beer: pendingHigh.beer_number, err }, "unstick insert failed");
-        }
-      }
-      pendingHigh = null;
-
+      // Stage the beer; the flush sweep confirms it into `beers` after the edit window,
+      // having applied any edits/deletes/redeliveries to the staged row in the meantime.
+      const ts = new Date(Number(msg.messageTimestamp) * 1000);
       try {
-        const inserted = await insertBeers([entry]);
-        if (inserted) log.info({ beer: beer_number, member, catchup }, "beer recorded");
-        else log.info({ beer: beer_number, member }, "duplicate ignored");
+        await stagePending({
+          beer_number, member,
+          push_name: msg.pushName ?? null,
+          participant: num(msg.key.participant),
+          ts,
+          raw_caption: text,
+          wa_message_id: msg.key.id,
+          flush_at: new Date(ts.getTime() + EDIT_WINDOW_MS),
+        });
+        log.info({ beer: beer_number, member, catchup }, "beer staged");
       } catch (err) {
-        log.error({ beer: beer_number, err }, "write failed");
+        log.error({ beer: beer_number, err }, "stage failed");
       }
     }
   });
@@ -410,6 +386,25 @@ async function handleEdit(originalId, newText, ts, pushName, participant) {
   if (!originalId) return;
   const beer_number = parseBeer(newText);
 
+  // Still in the buffer? Patch/drop the staged row; its final state flushes later.
+  try {
+    const pending = await getPending(originalId);
+    if (pending) {
+      if (beer_number === null) {
+        await deletePending(originalId);
+        log.info({ id: originalId, text: newText }, "edit to non-number: dropped pending beer");
+      } else {
+        await patchPending(originalId, { beer_number, raw_caption: newText });
+        log.info({ id: originalId, beer: beer_number, text: newText }, "pending beer edited");
+      }
+      return;
+    }
+  } catch (err) {
+    log.error({ id: originalId, err }, "pending edit failed");
+    return;
+  }
+
+  // Already flushed to `beers` — post-flush edit fallback.
   const fields = { raw_caption: newText, ts };
   if (pushName) { fields.member = pushName; fields.push_name = pushName; }
   if (participant) fields.participant = participant;
@@ -433,6 +428,16 @@ async function handleDeletion(sock, msg) {
   const authorJid = msg.message.protocolMessage.key?.participant; // original poster
   const deleterJid = msg.key.participant; // who issued the revoke
   if (!deletedId) return;
+
+  // If it's still staged (not yet confirmed), just drop it — never counted, no log row needed.
+  try {
+    if (await deletePending(deletedId)) {
+      log.info({ id: deletedId }, "pending beer revoked before flush — dropped");
+      return;
+    }
+  } catch (err) {
+    log.error({ id: deletedId, err }, "pending revoke failed");
+  }
 
   let byAdmin = false;
   try {
@@ -459,3 +464,6 @@ async function handleDeletion(sock, msg) {
 
 acquireSessionLock(); // refuse to start if another process holds the WhatsApp session
 start();
+// Confirm staged beers whose edit window has closed. Started once (not per reconnect) since
+// start() re-runs on every reconnect; the sweep is stateless and reads the whole table.
+setInterval(() => flushDue().catch((err) => log.error({ err }, "flush sweep failed")), FLUSH_INTERVAL_MS);
