@@ -102,6 +102,68 @@ export async function handleBeerEdit(waMessageId, newBeerNumber, fields) {
   return done({ action: inserted?.length ? "inserted" : "noop", beer: inserted?.[0] ?? null });
 }
 
+// ---- Persistent write buffer (pending_beers staging) -------------------------------------
+// Beers wait here for the WhatsApp edit window; a flush sweep (buffer.js) validates and moves
+// the final state into `beers`. Keyed by wa_message_id so edits/redeliveries collapse to one row.
+
+export async function stagePending(e) {
+  const row = {
+    wa_message_id: e.wa_message_id,
+    beer_number: e.beer_number,
+    member: maskPhone(e.member),
+    push_name: e.push_name ?? null,
+    participant: e.participant?.trim() || null,
+    ts: e.ts instanceof Date ? e.ts.toISOString() : e.ts,
+    raw_caption: e.raw_caption ?? null,
+    flush_at: e.flush_at instanceof Date ? e.flush_at.toISOString() : e.flush_at,
+  };
+  const { error } = await supabase.from("pending_beers").upsert(row, { onConflict: "wa_message_id" });
+  if (error) throw error;
+}
+
+// Staged row for a message id, or null (routes an edit/revoke: still pending vs already flushed).
+export async function getPending(waMessageId) {
+  const { data, error } = await supabase.from("pending_beers").select("*").eq("wa_message_id", waMessageId).maybeSingle();
+  if (error) throw error;
+  return data ?? null;
+}
+
+// Patch a staged beer (an edit landed before flush). Returns true if a row changed.
+export async function patchPending(waMessageId, fields) {
+  const { data, error } = await supabase.from("pending_beers").update(fields).eq("wa_message_id", waMessageId).select("wa_message_id");
+  if (error) throw error;
+  return !!data?.length;
+}
+
+// Drop a staged beer (edit-to-non-number, or revoke before flush). Returns true if removed.
+export async function deletePending(waMessageId) {
+  const { data, error } = await supabase.from("pending_beers").delete().eq("wa_message_id", waMessageId).select("wa_message_id");
+  if (error) throw error;
+  return !!data?.length;
+}
+
+// All staged rows oldest-first: the sweep needs which are due plus the later ones as
+// corroboration look-ahead.
+export async function getAllPending() {
+  const { data, error } = await supabase.from("pending_beers").select("*").order("ts", { ascending: true });
+  if (error) throw error;
+  return data ?? [];
+}
+
+// Record a beer that failed validation (uncorroborated jump) for manual review.
+export async function insertQuarantined(e, reason) {
+  const { error } = await supabase.from("quarantined_beers").insert({
+    beer_number: e.beer_number,
+    member: e.member ? maskPhone(e.member) : null,
+    participant: e.participant ?? null,
+    wa_message_id: e.wa_message_id ?? null,
+    ts: e.ts instanceof Date ? e.ts.toISOString() : e.ts,
+    raw_caption: e.raw_caption ?? null,
+    reason: reason ?? null,
+  });
+  if (error) throw error;
+}
+
 // Sync current group members. participants: [{ participant, phone, is_admin }]
 // (participant = lid digits in a lid-addressed group; phone may be null).
 // Reconciles against the table: present members are (re)activated, anyone no

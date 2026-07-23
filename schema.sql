@@ -68,6 +68,42 @@ drop policy if exists "public read" on deleted_beers;
 create policy "public read" on deleted_beers for select using (true);
 grant select on deleted_beers to anon, authenticated;
 
+-- Staging buffer: every incoming beer lands here first and waits out the WhatsApp
+-- 15-minute edit window. Edits/deletes/redeliveries patch the row (keyed by message id);
+-- a flush sweep then validates and moves the final row into `beers`. Persistent so a
+-- crash never loses un-flushed beers. Bot-only (secret key); no public read.
+create table if not exists pending_beers (
+  wa_message_id text primary key,        -- one row per message; edits/redeliveries upsert it
+  beer_number   integer not null,
+  member        text not null,           -- resolved at ingest (push_name / masked id / "unknown")
+  push_name     text,
+  participant   text,
+  ts            timestamptz not null,    -- original message time; edit window measured from here
+  raw_caption   text,
+  received_at   timestamptz not null default now(),
+  flush_at      timestamptz not null     -- ts + edit window; sweep flushes rows past this
+);
+create index if not exists pending_beers_flush_at_idx on pending_beers (flush_at);
+create index if not exists pending_beers_ts_idx on pending_beers (ts);
+alter table pending_beers enable row level security;
+revoke select on pending_beers from anon, authenticated;
+
+-- Beers whose number ran ahead and was never corroborated by later beers (likely a typo,
+-- never edited) — held for manual review instead of polluting the count. See buffer.js.
+create table if not exists quarantined_beers (
+  id            bigint generated always as identity primary key,
+  beer_number   integer not null,
+  member        text,
+  participant   text,
+  wa_message_id text,
+  ts            timestamptz not null,
+  raw_caption   text,
+  reason        text,
+  created_at    timestamptz not null default now()
+);
+alter table quarantined_beers enable row level security;
+revoke select on quarantined_beers from anon, authenticated;
+
 -- Current group members, synced by the bot on each connect.
 create table if not exists members (
   participant  text primary key,
