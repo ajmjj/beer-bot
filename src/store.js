@@ -230,7 +230,7 @@ export async function markBeerDeleted(waMessageId, deletedBy, deletedByName, byA
     .from("beers")
     .delete()
     .eq("wa_message_id", waMessageId)
-    .select("beer_number, member");
+    .select("beer_number, member, participant");
   if (error) throw error;
   const beer = data?.[0];
   dbLog.debug({ op: "markBeerDeleted", id: waMessageId, matched: !!beer, ms: Date.now() - t0 }, "db write");
@@ -238,7 +238,7 @@ export async function markBeerDeleted(waMessageId, deletedBy, deletedByName, byA
 
   const { error: logErr } = await supabase.from("deleted_beers").insert({
     beer_number: beer.beer_number,
-    poster: beer.member,
+    participant: beer.participant,
     deleted_by: deletedByName || deletedBy,
     by_admin: byAdmin,
     wa_message_id: waMessageId,

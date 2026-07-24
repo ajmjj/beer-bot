@@ -57,7 +57,7 @@ drop view if exists deleted_beers;
 create table if not exists deleted_beers (
   id            bigint generated always as identity primary key,
   beer_number   integer not null,
-  poster        text not null,        -- display name of who posted it
+  participant   text,                 -- lid of who posted it (keys to beers/members.participant)
   deleted_by    text,                 -- who deleted it (= poster on self-delete; null if unknown)
   by_admin      boolean,              -- deleter is a group admin and != poster
   deleted_at    timestamptz not null default now(),
@@ -67,6 +67,19 @@ alter table deleted_beers enable row level security;
 drop policy if exists "public read" on deleted_beers;
 create policy "public read" on deleted_beers for select using (true);
 grant select on deleted_beers to anon, authenticated;
+
+-- Existing installs: log was keyed on poster (a display name); add the lid
+-- column and relax the old NOT NULL so new lid-only inserts and the historical
+-- backfill work. The `poster` column is dropped at the very end of this file,
+-- after the one-time name->lid backfill worksheet is applied.
+alter table deleted_beers add column if not exists participant text;
+do $$
+begin
+  if exists (select 1 from information_schema.columns
+             where table_name = 'deleted_beers' and column_name = 'poster') then
+    alter table deleted_beers alter column poster drop not null;
+  end if;
+end $$;
 
 -- Current group members, synced by the bot on each connect.
 create table if not exists members (
@@ -393,8 +406,8 @@ do $$
 begin
   if exists (select 1 from information_schema.columns
              where table_name = 'beers' and column_name = 'deleted_at') then
-    insert into deleted_beers (beer_number, poster, deleted_by, by_admin, deleted_at, wa_message_id)
-      select beer_number, member, coalesce(deleted_by_name, deleted_by), by_admin, deleted_at, wa_message_id
+    insert into deleted_beers (beer_number, participant, deleted_by, by_admin, deleted_at, wa_message_id)
+      select beer_number, participant, coalesce(deleted_by_name, deleted_by), by_admin, deleted_at, wa_message_id
       from beers where deleted_at is not null;
     delete from beers where deleted_at is not null;
     alter table beers
@@ -402,5 +415,19 @@ begin
       drop column deleted_by,
       drop column deleted_by_name,
       drop column by_admin;
+  end if;
+end $$;
+
+-- Drop the legacy poster (display-name) column from the deletion log. Guarded so
+-- a top-to-bottom re-run before the backfill is a no-op: only drops once every
+-- poster row has a participant (i.e. scripts/backfill-deleted-participant.js and
+-- the hand-mapped worksheet have run). Otherwise it would destroy the only record
+-- of who posted the still-unresolved deleted beers.
+do $$
+begin
+  if exists (select 1 from information_schema.columns
+             where table_name = 'deleted_beers' and column_name = 'poster')
+     and not exists (select 1 from deleted_beers where poster is not null and participant is null) then
+    alter table deleted_beers drop column poster;
   end if;
 end $$;
