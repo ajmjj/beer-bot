@@ -38,6 +38,14 @@ const MAX_SKIP = 5; // reject beer numbers more than this far ahead of current m
 const PAIR_NUMBER = process.env.PAIR_NUMBER || null; // optional: e.g. 491701234567 for pairing-code login
 const baileysLogger = log.child({ module: "baileys" }, { level: process.env.BAILEYS_LOG_LEVEL || "warn" });
 
+// Dead-man's-switch heartbeat: ping HEALTHCHECK_URL every 60s while WhatsApp is connected,
+// and /fail the instant it drops. healthchecks.io alerts (e.g. Telegram push) if pings stop.
+// No-op if HEALTHCHECK_URL is unset, so local dev is unaffected.
+const HEALTHCHECK_URL = process.env.HEALTHCHECK_URL || null;
+let heartbeat = null;
+// ponytail: fire-and-forget — a failed ping must never crash or block the bot.
+const hcPing = (path = "") => { if (HEALTHCHECK_URL) fetch(HEALTHCHECK_URL + path).catch(() => {}); };
+
 // Unwrap container types: HD images (viewOnceMessageV2), live photos (viewOnceMessage),
 // docs-with-caption, and disappearing messages all nest the real message one level down.
 const unwrap = (message) =>
@@ -211,6 +219,9 @@ async function start() {
       qrcode.generate(qr, { small: true });
     }
     if (connection === "open") {
+      hcPing(); // check in now, then keep checking in while the socket stays open
+      clearInterval(heartbeat);
+      heartbeat = setInterval(hcPing, 60_000);
       log.info({ group: GROUP_JID }, GROUP_JID ? "connected" : "connected — no GROUP_JID set, logging group JIDs");
       reconcileMembers(sock); // catches joins/leaves that happened while offline
       if (GROUP_JID) {
@@ -235,6 +246,8 @@ async function start() {
       }
     }
     if (connection === "close") {
+      clearInterval(heartbeat);
+      hcPing("/fail"); // tell healthchecks we dropped, so it alerts without waiting for the timeout
       const code = lastDisconnect?.error?.output?.statusCode;
       if (code === DisconnectReason.loggedOut) {
         log.error("logged out — delete .baileys_auth and re-link");
