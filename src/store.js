@@ -37,8 +37,8 @@ export async function insertBeers(entries) {
 
   const rows = entries.map((e) => ({
     beer_number: e.beer_number,
-    member: maskPhone(e.member),
-    push_name: e.push_name ?? null, // null for backfill/manual; set on live
+    member: maskPhone(e.member?.trim()),
+    push_name: e.push_name?.trim() || null, // null for backfill/manual; set on live
     participant: e.participant?.trim() || null, // trim: manual inserts have pasted ids with stray whitespace
     ts: e.ts instanceof Date ? e.ts.toISOString() : e.ts,
     raw_caption: e.raw_caption ?? null,
@@ -59,7 +59,7 @@ export async function insertBeers(entries) {
 export async function correctBeerMember(beerNumber, { participant, pushName, member }) {
   const t0 = Date.now();
   const { data, error } = await supabase.from("beers")
-    .update({ participant, push_name: pushName ?? null, member: maskPhone(member) })
+    .update({ participant, push_name: pushName?.trim() || null, member: maskPhone(member?.trim()) })
     .eq("beer_number", beerNumber)
     .select("beer_number, member");
   if (error) throw error;
