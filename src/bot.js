@@ -313,7 +313,9 @@ async function start() {
       const beer_number = parseBeer(text);
       const member = msg.pushName || num(msg.key.participant) || "unknown";
       if (beer_number === null) {
-        if (text.trim()) log.info({ member, text: text.slice(0, 60) }, "skipped non-beer message");
+        // Log every non-beer message — including caption-less media — so a beer photo
+        // posted without a number is still visible in the log for manual backfill.
+        log.info({ member, id: msg.key.id, kind: messageKind(msg.message), text: text.slice(0, 200) }, "skipped non-beer message");
         continue;
       }
       const entry = {
@@ -345,12 +347,17 @@ async function start() {
           log.error({ beer: pendingHigh.beer_number, err }, "unstick insert failed");
         }
       }
+      // A held ran-ahead value that a normal beer supersedes (never confirmed) is dropped —
+      // log it so a wrongly-discarded beer can be spotted and backfilled by hand.
+      if (pendingHigh && decision === "pass") {
+        log.info({ beer: pendingHigh.beer_number, member: pendingHigh.member, id: pendingHigh.wa_message_id }, "held beer discarded (unconfirmed ran-ahead value)");
+      }
       pendingHigh = null;
 
       try {
         const inserted = await insertBeers([entry]);
-        if (inserted) log.info({ beer: beer_number, member, catchup }, "beer recorded");
-        else log.info({ beer: beer_number, member }, "duplicate ignored");
+        if (inserted) log.info({ beer: beer_number, member, id: msg.key.id, text, catchup }, "beer recorded");
+        else log.info({ beer: beer_number, member, id: msg.key.id }, "duplicate ignored");
       } catch (err) {
         log.error({ beer: beer_number, err }, "write failed");
       }
