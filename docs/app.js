@@ -111,8 +111,15 @@ async function loadTrends() {
   const dates = series.map((r) => r.beer_date);
   const line = (label, data) => ({
     type: "line",
-    data: { labels: dates, datasets: [{ label, data, borderColor: AMBER, backgroundColor: "rgba(245,166,35,.15)", fill: true, pointRadius: 0, tension: .2 }] },
-    options: { plugins: { legend: { display: false } }, maintainAspectRatio: false, scales: { x: { ticks: { maxTicksLimit: 8 } } } },
+    data: { labels: dates, datasets: [{ label, data, borderColor: AMBER, backgroundColor: "rgba(245,166,35,.15)", fill: true, pointRadius: 0, pointHoverRadius: 4, tension: .2 }] },
+    options: {
+      interaction: { mode: "index", intersect: false }, // stock-graph style: hover anywhere on the x-axis
+      plugins: {
+        legend: { display: false },
+        tooltip: { callbacks: { title: (items) => fmtDate(items[0].label), label: (item) => `${label}: ${fmt(item.parsed.y)}` } },
+      },
+      maintainAspectRatio: false, scales: { x: { ticks: { maxTicksLimit: 8 } } },
+    },
   });
   chart("chart-cumulative", line("Cumulative", series.map((r) => r.cumulative)));
   chart("chart-rolling", line("Rolling 7d", series.map((r) => r.rolling_7d)));
