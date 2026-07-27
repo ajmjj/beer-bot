@@ -35,6 +35,20 @@ function chart(id, config) {
   charts[id] = new Chart($(id), config);
 }
 const AMBER = "#f5a623";
+const FOAM = "#f4eac9"; // warm cream head, like the foam on 🍺
+
+// Vertical amber gradient for the fill: pale gold at top, deep amber at the bottom of the glass.
+const beerFill = (ctx) => {
+  const { chart } = ctx;
+  const area = chart.chartArea;
+  if (!area) return "rgba(245,166,35,.2)"; // pre-layout fallback
+  const g = chart.ctx.createLinearGradient(0, area.top, 0, area.bottom);
+  g.addColorStop(0, "rgba(250,205,95,.60)");
+  g.addColorStop(0.35, "rgba(232,165,45,.50)");
+  g.addColorStop(0.7, "rgba(205,130,25,.42)");
+  g.addColorStop(1, "rgba(165,95,15,.34)");
+  return g;
+};
 
 // Vertical dashed crosshair at the hovered point (stock-graph style). Chart.js has no built-in.
 const crosshair = {
@@ -52,6 +66,85 @@ const crosshair = {
     ctx.strokeStyle = "#9a8c73"; ctx.lineWidth = 1;
     ctx.stroke();
     ctx.restore();
+  },
+};
+
+// Makes the filled area look like actual beer: a foamy head hugging the underside of the
+// line + carbonation bubbles rising through the amber. Everything is clipped to the region
+// under the line so foam/bubbles only appear inside the "glass". Self-animates via rAF.
+const beer = {
+  id: "beer",
+  afterDatasetsDraw(c) {
+    const pts = c.getDatasetMeta(0).data;
+    if (!pts.length) return;
+    const { ctx, chartArea: a } = c;
+    const width = a.right - a.left, height = a.bottom - a.top;
+    const t = performance.now() / 1000;
+
+    // one-time deterministic bubble field (kept on the chart so they don't teleport each frame)
+    c.$bubbles ??= Array.from({ length: 60 }, () => ({
+      fx: Math.random(), r: 0.8 + Math.random() * 2.4,
+      speed: 0.04 + Math.random() * 0.12, phase: Math.random(), drift: (Math.random() - 0.5) * 10,
+    }));
+
+    ctx.save();
+    // clip to the area between the line and the bottom axis (the beer)
+    ctx.beginPath();
+    ctx.moveTo(pts[0].x, pts[0].y);
+    for (const p of pts) ctx.lineTo(p.x, p.y);
+    ctx.lineTo(pts[pts.length - 1].x, a.bottom);
+    ctx.lineTo(pts[0].x, a.bottom);
+    ctx.closePath();
+    ctx.clip();
+
+    // rising bubbles
+    for (const b of c.$bubbles) {
+      const x = a.left + b.fx * width + Math.sin(t * 1.5 + b.phase * 6) * b.drift;
+      const y = a.bottom - ((t * b.speed + b.phase) % 1) * height;
+      ctx.beginPath();
+      ctx.arc(x, y, b.r, 0, Math.PI * 2);
+      ctx.fillStyle = "rgba(255,244,214,.5)";
+      ctx.fill();
+      ctx.lineWidth = 0.6; ctx.strokeStyle = "rgba(255,255,255,.35)";
+      ctx.stroke();
+    }
+
+    // foamy head: a continuous creamy band hugging the underside of the line — thick and soft,
+    // denser at the top and fading into the beer below (drawn as stacked round strokes on the line).
+    const tracePath = () => {
+      ctx.beginPath();
+      ctx.moveTo(pts[0].x, pts[0].y);
+      for (const p of pts) ctx.lineTo(p.x, p.y);
+    };
+    ctx.lineJoin = "round"; ctx.lineCap = "round";
+    // many thin strokes, widest+faintest at the bottom of the band to densest+opaque at the line
+    for (let w = 36; w >= 5; w -= 2) {
+      const k = (36 - w) / 31; // 0 at the widest, 1 nearest the line
+      tracePath();
+      ctx.lineWidth = w;
+      ctx.strokeStyle = `rgba(244,234,201,${(Math.pow(k, 4) * 0.95).toFixed(3)})`;
+      ctx.stroke();
+    }
+
+    // sparse frothy texture where the foam meets the beer
+    for (let i = 0; i < pts.length; i += 4) {
+      const p = pts[i];
+      ctx.beginPath();
+      ctx.arc(p.x, p.y + 16 + Math.sin(t * 1.5 + i) * 2, 1 + (i % 3) * 0.8, 0, Math.PI * 2);
+      ctx.fillStyle = "rgba(255,250,235,.55)";
+      ctx.fill();
+    }
+    ctx.restore();
+
+    // keep the bubbles moving (single rAF loop per chart; stops itself once destroyed)
+    if (!c.$beerRAF) {
+      const loop = () => {
+        if (!c.canvas) return; // chart destroyed on tab switch — stop the loop
+        c.$beerRAF = requestAnimationFrame(loop);
+        c.draw();
+      };
+      c.$beerRAF = requestAnimationFrame(loop);
+    }
   },
 };
 
@@ -130,8 +223,8 @@ async function loadTrends() {
   const dates = series.map((r) => r.beer_date);
   const line = (label, data) => ({
     type: "line",
-    plugins: [crosshair],
-    data: { labels: dates, datasets: [{ label, data, borderColor: AMBER, backgroundColor: "rgba(245,166,35,.15)", fill: true, pointRadius: 0, pointHoverRadius: 5, pointHoverBackgroundColor: AMBER, pointHoverBorderColor: AMBER, tension: .2 }] },
+    plugins: [beer, crosshair],
+    data: { labels: dates, datasets: [{ label, data, borderColor: FOAM, borderWidth: 3, backgroundColor: beerFill, fill: true, pointRadius: 0, pointHoverRadius: 5, pointHoverBackgroundColor: FOAM, pointHoverBorderColor: AMBER, tension: .3 }] },
     options: {
       interaction: { mode: "index", intersect: false }, // stock-graph style: hover anywhere on the x-axis
       plugins: {
