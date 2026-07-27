@@ -184,8 +184,8 @@ async function loadLeaderboards() {
   // top performers with show-all toggle
   let expanded = false;
   const drawBoard = () => {
-    const rows = (expanded ? board : board.slice(0, 20)).map((r, i) => [{ v: i + 1, cls: "rank" }, esc(r.member), { v: fmt(r.beers), cls: "beers" }, { v: fmtDate(r.last_beer), cls: "num" }]);
-    table("board", [{ label: "#", num: true }, { label: "Member" }, { label: "Beers", num: true }, { label: "Last beer", num: true }], rows);
+    const rows = (expanded ? board : board.slice(0, 20)).map((r, i) => [{ v: i + 1, cls: "rank" }, esc(r.member), { v: fmt(r.beers), cls: "beers" }, { v: fmtDate(r.last_beer), cls: "num" }, { v: fmtDate(r.first_beer), cls: "num" }]);
+    table("board", [{ label: "#", num: true }, { label: "Member" }, { label: "Beers", num: true }, { label: "Last beer", num: true }, { label: "First beer", num: true }], rows);
   };
   drawBoard();
   const btn = $("toggle");
@@ -197,9 +197,8 @@ async function loadLeaderboards() {
   table("board-active", [{ label: "Member" }, { label: "Per day", num: true }, { label: "Beers", num: true }],
     active.slice(0, 10).map((r) => [esc(r.member), { v: r.per_active_day, cls: "num beers" }, { v: fmt(r.beers), cls: "num" }]));
 
-  const isoWeek = (s) => { const d = new Date(s); d.setUTCDate(d.getUTCDate() + 4 - (d.getUTCDay() || 7)); return Math.ceil(((d - new Date(Date.UTC(d.getUTCFullYear(), 0, 1))) / 86400000 + 1) / 7); };
-  table("board-week", [{ label: "Member" }, { label: "Beers", num: true }, { label: "Week", num: true }],
-    [...week].sort((a, b) => b.beers - a.beers).slice(0, 10).map((r) => [esc(r.member), { v: fmt(r.beers), cls: "beers" }, { v: `CW ${isoWeek(r.week_start)}`, cls: "num" }]));
+  table("board-week", [{ label: "Member" }, { label: "Beers", num: true }, { label: "Week of", num: true }],
+    [...week].sort((a, b) => b.beers - a.beers).slice(0, 10).map((r) => [esc(r.member), { v: fmt(r.beers), cls: "beers" }, { v: fmtDate(r.week_start), cls: "num" }]));
 
   table("board-bigday", [{ label: "Member" }, { label: "Beers", num: true }, { label: "Date", num: true }],
     [...bigday].sort((a, b) => b.biggest_day - a.biggest_day).slice(0, 10).map((r) => [esc(r.member), { v: fmt(r.biggest_day), cls: "beers" }, { v: fmtDate(r.date), cls: "num" }]));
