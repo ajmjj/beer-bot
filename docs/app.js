@@ -36,6 +36,25 @@ function chart(id, config) {
 }
 const AMBER = "#f5a623";
 
+// Vertical dashed crosshair at the hovered point (stock-graph style). Chart.js has no built-in.
+const crosshair = {
+  id: "crosshair",
+  afterDatasetsDraw(c) {
+    const active = c.tooltip?.getActiveElements?.();
+    if (!active?.length) return;
+    const x = active[0].element.x;
+    const { top, bottom } = c.chartArea;
+    const ctx = c.ctx;
+    ctx.save();
+    ctx.beginPath();
+    ctx.setLineDash([4, 4]);
+    ctx.moveTo(x, top); ctx.lineTo(x, bottom);
+    ctx.strokeStyle = "#9a8c73"; ctx.lineWidth = 1;
+    ctx.stroke();
+    ctx.restore();
+  },
+};
+
 // ---------- loaders (run once per tab) ----------
 async function loadOverview() {
   const [[t], [d], series, [mstat], [gaps]] = await Promise.all([view("totals"), view("day_extremes"), view("v_daily_series", "&order=beer_date.asc"), view("v_member_stats"), view("v_gaps")]);
@@ -111,12 +130,18 @@ async function loadTrends() {
   const dates = series.map((r) => r.beer_date);
   const line = (label, data) => ({
     type: "line",
-    data: { labels: dates, datasets: [{ label, data, borderColor: AMBER, backgroundColor: "rgba(245,166,35,.15)", fill: true, pointRadius: 0, pointHoverRadius: 4, pointHoverBackgroundColor: AMBER, tension: .2 }] },
+    plugins: [crosshair],
+    data: { labels: dates, datasets: [{ label, data, borderColor: AMBER, backgroundColor: "rgba(245,166,35,.15)", fill: true, pointRadius: 0, pointHoverRadius: 5, pointHoverBackgroundColor: AMBER, pointHoverBorderColor: AMBER, tension: .2 }] },
     options: {
       interaction: { mode: "index", intersect: false }, // stock-graph style: hover anywhere on the x-axis
       plugins: {
         legend: { display: false },
-        tooltip: { callbacks: { title: (items) => fmtDate(items[0].label), label: (item) => `${label}: ${fmt(item.parsed.y)}` } },
+        tooltip: {
+          position: "nearest", yAlign: "bottom", caretSize: 0, displayColors: false,
+          backgroundColor: "#2a2419", padding: 8, cornerRadius: 6,
+          titleColor: "#f5e9d0", bodyColor: "#9a8c73",
+          callbacks: { title: (items) => `${fmt(items[0].parsed.y)}`, label: (item) => fmtDate(item.label) },
+        },
       },
       maintainAspectRatio: false, scales: { x: { ticks: { maxTicksLimit: 8 } } },
     },
