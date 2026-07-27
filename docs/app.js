@@ -111,7 +111,7 @@ async function loadTrends() {
   const dates = series.map((r) => r.beer_date);
   const line = (label, data) => ({
     type: "line",
-    data: { labels: dates, datasets: [{ label, data, borderColor: AMBER, backgroundColor: "rgba(245,166,35,.15)", fill: true, pointRadius: 0, pointHoverRadius: 4, tension: .2 }] },
+    data: { labels: dates, datasets: [{ label, data, borderColor: AMBER, backgroundColor: "rgba(245,166,35,.15)", fill: true, pointRadius: 0, pointHoverRadius: 4, pointHoverBackgroundColor: AMBER, tension: .2 }] },
     options: {
       interaction: { mode: "index", intersect: false }, // stock-graph style: hover anywhere on the x-axis
       plugins: {
