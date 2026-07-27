@@ -204,7 +204,7 @@ create or replace view v_identity as
   order by coalesce(participant, member), ts desc;
 
 create or replace view leaderboard_alltime as
-  select i.member, count(*)::int as beers, min(b.beer_date) as first_beer, max(b.beer_date) as last_beer
+  select i.member, count(*)::int as beers, max(b.beer_date) as last_beer
   from beers b
   join v_identity i on i.pid = coalesce(b.participant, b.member)
   group by i.pid, i.member
