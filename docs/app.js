@@ -82,8 +82,8 @@ async function loadLeaderboards() {
     btn.onclick = () => { expanded = !expanded; btn.textContent = expanded ? "Show top 20" : "Show all"; drawBoard(); };
   } else btn.hidden = true;
 
-  table("board-active", [{ label: "Member" }, { label: "Per day", num: true }, { label: "Beers", num: true }],
-    active.slice(0, 10).map((r) => [esc(r.member), { v: r.per_active_day, cls: "num beers" }, { v: fmt(r.beers), cls: "num" }]));
+  table("board-active", [{ label: "Member" }, { label: "Per day", num: true }, { label: "Beers", num: true }, { label: "Active days", num: true }],
+    active.slice(0, 10).map((r) => [esc(r.member), { v: r.per_active_day, cls: "num beers" }, { v: fmt(r.beers), cls: "num" }, { v: fmt(r.active_days), cls: "num" }]));
 
   const isoWeek = (s) => { const d = new Date(s); d.setUTCDate(d.getUTCDate() + 4 - (d.getUTCDay() || 7)); return Math.ceil(((d - new Date(Date.UTC(d.getUTCFullYear(), 0, 1))) / 86400000 + 1) / 7); };
   table("board-week", [{ label: "Member" }, { label: "Beers", num: true }, { label: "Week", num: true }],
