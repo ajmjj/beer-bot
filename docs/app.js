@@ -148,6 +148,102 @@ const beer = {
   },
 };
 
+// Horizontal dark gradient for the moulded-plastic base/cap of the tower.
+function blackGrad(ctx, l, w) {
+  const g = ctx.createLinearGradient(l, 0, l + w, 0);
+  g.addColorStop(0, "#141417"); g.addColorStop(0.45, "#3a3a41"); g.addColorStop(1, "#141417");
+  return g;
+}
+// A beer-tower dispenser: fixed black base (with tap) + top cap, and an amber glass column in
+// between that grows to represent the value. Drawn from `top` (value line) down to `base` (axis).
+// `bubbles` = persistent carbonation field, `t` = seconds, so the beer fizzes.
+function drawTower(ctx, cx, top, base, w, t, bubbles) {
+  const l = cx - w / 2;
+  const capH = Math.max(7, w * 0.34);
+  const pedH = Math.max(16, w * 1.2);
+  const tubeTop = top + capH, tubeBot = base - pedH, tubeH = tubeBot - tubeTop;
+  const rad = [w * 0.16, w * 0.16, 2, 2];
+
+  if (tubeH > 3) {
+    const beer = ctx.createLinearGradient(0, tubeTop, 0, tubeBot);
+    beer.addColorStop(0, "#ffd23f"); beer.addColorStop(1, "#e8930b");
+    ctx.fillStyle = beer;
+    ctx.beginPath(); ctx.roundRect(l, tubeTop, w, tubeH, rad); ctx.fill();
+
+    ctx.save();
+    ctx.beginPath(); ctx.roundRect(l, tubeTop, w, tubeH, rad); ctx.clip();
+    // foam head with a wavy underside
+    const foamH = Math.min(w * 0.55, tubeH * 0.4);
+    ctx.fillStyle = "#fbf5e6"; ctx.beginPath(); ctx.moveTo(l, tubeTop);
+    ctx.lineTo(l, tubeTop + foamH);
+    for (let k = 0; k <= 4; k++) ctx.lineTo(l + w * k / 4, tubeTop + foamH + (k % 2 ? -w * 0.07 : w * 0.07));
+    ctx.lineTo(l + w, tubeTop); ctx.closePath(); ctx.fill();
+    // rising carbonation: bubbles travel from the base up to the foam line
+    ctx.fillStyle = "rgba(255,255,255,.55)";
+    const range = tubeH - foamH;
+    for (const b of bubbles) {
+      const by = tubeBot - ((t * b.speed + b.phase) % 1) * range;
+      ctx.beginPath(); ctx.arc(l + b.fx * w, by, b.rf * w, 0, Math.PI * 2); ctx.fill();
+    }
+    // glass sheen
+    ctx.fillStyle = "rgba(255,255,255,.20)"; ctx.fillRect(l + w * 0.14, tubeTop, w * 0.09, tubeH);
+    ctx.restore();
+
+    // measurement ticks on the right
+    ctx.strokeStyle = "rgba(120,70,0,.45)"; ctx.lineWidth = 1;
+    const ticks = Math.min(9, Math.floor(tubeH / 16));
+    for (let k = 1; k <= ticks; k++) {
+      const ty = tubeTop + foamH + (tubeH - foamH) * k / (ticks + 1);
+      ctx.beginPath(); ctx.moveTo(l + w * 0.76, ty); ctx.lineTo(l + w * 0.9, ty); ctx.stroke();
+    }
+    ctx.strokeStyle = "rgba(255,255,255,.22)"; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.roundRect(l, tubeTop, w, tubeH, rad); ctx.stroke();
+  }
+
+  // top cap
+  const capW = w * 1.1, cl = cx - capW / 2;
+  ctx.fillStyle = blackGrad(ctx, cl, capW);
+  ctx.beginPath(); ctx.roundRect(cl, top, capW, capH, [capH * 0.4, capH * 0.4, 2, 2]); ctx.fill();
+
+  // base: collar (with tap) + wider foot
+  const footTop = base - pedH * 0.5;
+  const colW = w * 1.16, colL = cx - colW / 2;
+  ctx.fillStyle = blackGrad(ctx, colL, colW);
+  ctx.beginPath(); ctx.roundRect(colL, tubeBot, colW, footTop - tubeBot + w * 0.12, [3, 3, 0, 0]); ctx.fill();
+  const footW = w * 1.72, footL = cx - footW / 2;
+  ctx.fillStyle = blackGrad(ctx, footL, footW);
+  ctx.beginPath(); ctx.roundRect(footL, footTop, footW, base - footTop, [footW * 0.16, footW * 0.16, footW * 0.09, footW * 0.09]); ctx.fill();
+  // tap nozzle on the front
+  const tapY = tubeBot + (footTop - tubeBot) * 0.45;
+  ctx.fillStyle = "#c8c8c8";
+  ctx.beginPath(); ctx.roundRect(cx - w * 0.05, tapY, w * 0.1, w * 0.3, w * 0.05); ctx.fill();
+  ctx.fillStyle = "#9a9a9a"; ctx.beginPath(); ctx.arc(cx, tapY, w * 0.07, 0, Math.PI * 2); ctx.fill();
+}
+
+// Renders each bar as a beer-tower dispenser. Pair with a transparent bar dataset — the bar
+// geometry gives the tower width and how tall the amber column grows.
+const beerTowers = {
+  id: "beerTowers",
+  afterDatasetsDraw(c) {
+    const { ctx } = c;
+    const t = performance.now() / 1000;
+    for (const bar of c.getDatasetMeta(0).data) {
+      if (!bar) continue;
+      const { x, y, base, width } = bar.getProps(["x", "y", "base", "width"], true);
+      if (base - y <= 2) continue;
+      bar.$bub ??= Array.from({ length: 10 }, () => ({
+        fx: 0.2 + Math.random() * 0.6, rf: 0.018 + Math.random() * 0.03,
+        speed: 0.05 + Math.random() * 0.13, phase: Math.random(),
+      }));
+      drawTower(ctx, x, y, base, Math.min(width * 0.7, 68), t, bar.$bub);
+    }
+    if (!c.$beerRAF) { // single rAF per chart; stops itself once the canvas is gone
+      const loop = () => { if (!c.canvas) return; c.$beerRAF = requestAnimationFrame(loop); c.draw(); };
+      c.$beerRAF = requestAnimationFrame(loop);
+    }
+  },
+};
+
 // ---------- loaders (run once per tab) ----------
 async function loadOverview() {
   const [[t], [d], series, [mstat], [gaps]] = await Promise.all([view("totals"), view("day_extremes"), view("v_daily_series", "&order=beer_date.asc"), view("v_member_stats"), view("v_gaps")]);
@@ -254,14 +350,13 @@ async function loadPatterns() {
 
   const mondayAvg = dow.find((r) => r.dow === 1)?.average || 1;
   chart("chart-dow", {
+    type: "bar",
+    plugins: [beerTowers],
     data: {
       labels: dow.map((r) => r.day_name),
-      datasets: [
-        { type: "bar", label: "Total", data: dow.map((r) => r.total), backgroundColor: AMBER, yAxisID: "y" },
-        { type: "line", label: "Average", data: dow.map((r) => r.average), borderColor: "#7fb3d5", yAxisID: "y1", tension: .3 },
-      ],
+      datasets: [{ label: "Total", data: dow.map((r) => r.total), backgroundColor: "transparent" }],
     },
-    options: { maintainAspectRatio: false, scales: { y: { position: "left" }, y1: { position: "right", grid: { drawOnChartArea: false } } } },
+    options: { maintainAspectRatio: false, plugins: { legend: { display: false } } },
   });
   table("dow", [{ label: "Day" }, { label: "Total", num: true }, { label: "Avg", num: true }, { label: "High", num: true }, { label: "Low", num: true }, { label: "Mon ratio", num: true }],
     dow.map((r) => [r.day_name, { v: fmt(r.total), cls: "num" }, { v: r.average, cls: "num beers" }, { v: r.highest, cls: "num" }, { v: r.lowest, cls: "num" }, { v: (r.average / mondayAvg).toFixed(2), cls: "num" }]));
