@@ -43,7 +43,6 @@ const baileysLogger = log.child({ module: "baileys" }, { level: process.env.BAIL
 // No-op if HEALTHCHECK_URL is unset, so local dev is unaffected.
 const HEALTHCHECK_URL = process.env.HEALTHCHECK_URL || null;
 let heartbeat = null;
-let reconnectDelay = 0; // backoff so a refused server (e.g. 405) can't be hammered into an IP block
 // ponytail: fire-and-forget — a failed ping must never crash or block the bot.
 const hcPing = (path = "") => { if (HEALTHCHECK_URL) fetch(HEALTHCHECK_URL + path).catch(() => {}); };
 
@@ -223,7 +222,6 @@ async function start() {
       hcPing(); // check in now, then keep checking in while the socket stays open
       clearInterval(heartbeat);
       heartbeat = setInterval(hcPing, 60_000);
-      reconnectDelay = 0; // healthy connection — reset backoff
       log.info({ group: GROUP_JID }, GROUP_JID ? "connected" : "connected — no GROUP_JID set, logging group JIDs");
       reconcileMembers(sock); // catches joins/leaves that happened while offline
       if (GROUP_JID) {
@@ -254,9 +252,8 @@ async function start() {
       if (code === DisconnectReason.loggedOut) {
         log.error("logged out — delete .baileys_auth and re-link");
       } else {
-        reconnectDelay = Math.min(reconnectDelay ? reconnectDelay * 2 : 2_000, 60_000);
-        log.info({ code, delayMs: reconnectDelay }, "connection closed, reconnecting");
-        setTimeout(start, reconnectDelay);
+        log.info({ code }, "connection closed, reconnecting");
+        start();
       }
     }
   });
