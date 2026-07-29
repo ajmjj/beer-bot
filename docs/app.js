@@ -159,8 +159,9 @@ function blackGrad(ctx, l, w) {
 // `bubbles` = persistent carbonation field, `t` = seconds, so the beer fizzes.
 function drawTower(ctx, cx, top, base, w, t, bubbles) {
   const l = cx - w / 2;
-  const capH = Math.max(7, w * 0.34);
-  const pedH = Math.max(16, w * 1.2);
+  // Fixed pixel heights (NOT width-scaled) so the base stays a constant size and the beer
+  // column — which starts at the top of the base — stays visible on wide desktop bars too.
+  const capH = 15, pedH = 48;
   const tubeTop = top + capH, tubeBot = base - pedH, tubeH = tubeBot - tubeTop;
   const rad = [w * 0.16, w * 0.16, 2, 2];
 
