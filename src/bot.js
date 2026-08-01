@@ -44,7 +44,9 @@ const baileysLogger = log.child({ module: "baileys" }, { level: process.env.BAIL
 const HEALTHCHECK_URL = process.env.HEALTHCHECK_URL || null;
 let heartbeat = null;
 // ponytail: fire-and-forget — a failed ping must never crash or block the bot.
-const hcPing = (path = "") => { if (HEALTHCHECK_URL) fetch(HEALTHCHECK_URL + path).catch(() => {}); };
+// A body (POSTed) shows up as "Last Ping Body" in the healthchecks.io alert.
+const hcPing = (path = "", body) =>
+  HEALTHCHECK_URL && fetch(HEALTHCHECK_URL + path, body ? { method: "POST", body } : undefined).catch(() => {});
 
 // Unwrap container types: HD images (viewOnceMessageV2), live photos (viewOnceMessage),
 // docs-with-caption, and disappearing messages all nest the real message one level down.
@@ -247,8 +249,12 @@ async function start() {
     }
     if (connection === "close") {
       clearInterval(heartbeat);
-      hcPing("/fail"); // tell healthchecks we dropped, so it alerts without waiting for the timeout
       const code = lastDisconnect?.error?.output?.statusCode;
+      const reasonName = Object.keys(DisconnectReason).find((k) => DisconnectReason[k] === code);
+      // tell healthchecks we dropped (so it alerts without waiting for the timeout),
+      // with the reason as the body — surfaces as "Last Ping Body" in the alert.
+      hcPing("/fail", `WhatsApp disconnected: ${reasonName || "unknown"} (code ${code ?? "?"})` +
+        (lastDisconnect?.error?.message ? ` — ${lastDisconnect.error.message}` : ""));
       if (code === DisconnectReason.loggedOut) {
         log.error("logged out — delete .baileys_auth and re-link");
       } else {
