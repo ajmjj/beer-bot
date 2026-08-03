@@ -445,6 +445,7 @@ async function handleEdit(originalId, newText, ts, pushName, participant) {
     if (result.action === "deleted") log.info({ beer: result.beer?.beer_number, member: result.beer?.member, id: originalId, text: newText }, "edit to non-number: hard deleted beer");
     else if (result.action === "updated") log.info({ id: originalId, beer: beer_number, member: result.beer?.member, text: newText }, "edit updated beer");
     else if (result.action === "inserted") log.info({ id: originalId, beer: beer_number, member: result.beer?.member, text: newText }, "edit created new beer");
+    else if (result.action === "conflict-deleted") log.warn({ id: originalId, target: beer_number, removed: result.beer?.beer_number, member: result.beer?.member, text: newText }, "edit target number already taken — removed the offending row");
     else if (result.action === "conflict") log.warn({ id: originalId, beer: beer_number, text: newText }, "edit target number already taken — dropped");
     else log.info({ id: originalId, text: newText }, "edit for untracked message ignored");
   } catch (err) {
