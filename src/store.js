@@ -69,9 +69,12 @@ export async function correctBeerMember(beerNumber, { participant, pushName, mem
 
 // Handle a message edit. If newBeerNumber is null, hard-delete the row. Otherwise update it
 // (or insert if the original message wasn't tracked).
-// Returns { action: 'deleted'|'updated'|'inserted'|'conflict'|'noop', beer }
-// 'conflict': the new number already belongs to another beer (unique violation) — the
-// edit is dropped non-fatally rather than throwing and losing it silently.
+// Returns { action: 'deleted'|'updated'|'inserted'|'conflict'|'conflict-deleted'|'noop', beer }
+// 'conflict-deleted': the edit targeted a number another beer already owns (unique
+//   violation). The edited row still held its pre-edit (usually typo'd) number, so we
+//   hard-delete it — keeping the inflated number would be worse than dropping the beer.
+//   The removed row is returned so the caller can alert. 'conflict': same violation but on
+//   the fresh-insert path (original untracked), where there's no stale row to remove.
 export async function handleBeerEdit(waMessageId, newBeerNumber, fields) {
   const t0 = Date.now();
   const done = (result) => {
@@ -91,7 +94,17 @@ export async function handleBeerEdit(waMessageId, newBeerNumber, fields) {
     .update({ beer_number: newBeerNumber, ...updateFields })
     .eq("wa_message_id", waMessageId)
     .select("beer_number, member");
-  if (ue) { if (isConflict(ue)) return done({ action: "conflict", beer: null }); throw ue; }
+  if (ue) {
+    if (isConflict(ue)) {
+      // The row keeps its stale (typo'd) number on a failed update — remove it so the
+      // inflated number doesn't linger. Return the removed row so the caller can alert.
+      const { data: removed, error: de } = await supabase.from("beers")
+        .delete().eq("wa_message_id", waMessageId).select("beer_number, member");
+      if (de) throw de;
+      return done({ action: "conflict-deleted", beer: removed?.[0] ?? null });
+    }
+    throw ue;
+  }
   if (updated?.length) return done({ action: "updated", beer: updated[0] });
 
   // Original message wasn't tracked (was skipped/deleted) — insert fresh (keeps ts).
