@@ -291,8 +291,8 @@ async function loadLeaderboards() {
     btn.onclick = () => { expanded = !expanded; btn.textContent = expanded ? "Show top 20" : "Show all"; drawBoard(); };
   } else btn.hidden = true;
 
-  table("board-active", [{ label: "Member" }, { label: "Per day", num: true }, { label: "Beers", num: true }],
-    active.slice(0, 10).map((r) => [esc(r.member), { v: r.per_active_day, cls: "num beers" }, { v: fmt(r.beers), cls: "num" }]));
+  table("board-active", [{ label: "Member" }, { label: "Per day", num: true }, { label: "Beers", num: true }, { label: "Active days", num: true }],
+    active.slice(0, 10).map((r) => [esc(r.member), { v: r.per_active_day, cls: "num beers" }, { v: fmt(r.beers), cls: "num" }, { v: fmt(r.active_days), cls: "num" }]));
 
   table("board-week", [{ label: "Member" }, { label: "Beers", num: true }, { label: "Week of", num: true }],
     [...week].sort((a, b) => b.beers - a.beers).slice(0, 10).map((r) => [esc(r.member), { v: fmt(r.beers), cls: "beers" }, { v: fmtDate(r.week_start), cls: "num" }]));
