@@ -185,7 +185,7 @@ drop view if exists
   v_daily_series, v_day_of_week, v_hourly_matrix, v_monthly, v_weekly,
   v_leaderboard_active, v_biggest_day, v_highest_week, v_milestones,
   v_forecast, v_admin_deletes, v_participation,
-  v_member_stats;
+  v_member_stats, v_last_active, v_offenders, v_lowest_drinker, v_worst_offenders;
 
 create or replace view totals as
   select count(*) total_beers,
@@ -386,12 +386,97 @@ create or replace view v_member_stats as
   select count(distinct coalesce(participant, member))::int as posting_members
   from beers;
 
+-- worst offenders
+create or replace view v_worst_offenders as
+ with base_members as (
+    select distinct member from v_identity
+  )
+  select
+      bm.member,
+      coalesce(ld.total_beers, 0) as total_beers,
+      coalesce(o.admin_deletes, 0) as admin_deletes,
+      coalesce(o.deletes_per_beer, 0) as deletes_per_beer,
+      round(
+          (coalesce(o.admin_deletes, 0) + 1)::numeric
+          / (coalesce(ld.total_beers, 0) + 1),
+          4
+      ) as score
+  from base_members bm
+  left join v_lowest_drinker ld on ld.member = bm.member
+  left join v_offenders      o  on o.poster  = bm.member
+  order by score desc, total_beers asc;
+
+-- last active day
+create or replace view v_last_active as
+  select i.member, max(b.ts) as last_active
+  from beers b
+  join v_identity i on i.pid = coalesce(b.participant, b.member)
+  group by i.pid, i.member
+  order by last_active asc;
+
+-- lowest drinkers
+create or replace view v_lowest_drinker as
+  select i.member,
+         count(*)::int as total_beers
+  from beers b
+  join v_identity i on i.pid = coalesce(b.participant, b.member)
+  group by i.pid, i.member
+  order by total_beers asc;
+
+-- biggest offenders
+create or replace view v_offenders as
+  with base_members as (
+      select distinct member from v_identity
+  ),
+  inactivity_calc as (
+      select
+          bm.member,
+          la.last_active,
+          case
+              when la.last_active is null then 30   -- never posted = fully inactive (cap)
+              else extract(day from (now() - la.last_active))::int
+          end as days_inactive
+      from base_members bm
+      left join v_last_active la on la.member = bm.member
+  ),
+  offender_calc as (
+      select
+          bm.member,
+          coalesce(ld.total_beers, 0) as total_beers,
+          coalesce(o.admin_deletes, 0) as admin_deletes,
+          round(
+              least(
+                  (coalesce(o.admin_deletes, 0) + 1)::numeric
+                  / (coalesce(ld.total_beers, 0) + 1),
+                  1.0
+              ),
+          4) as offender_score
+      from base_members bm
+      left join v_lowest_drinker ld on ld.member = bm.member
+      left join v_offenders      o  on o.poster  = bm.member
+  )
+  select
+      ic.member,
+      ic.last_active,
+      ic.days_inactive,
+      oc.total_beers,
+      oc.admin_deletes,
+      round(least(ic.days_inactive::numeric / 30, 1.0), 4) as inactivity_score,
+      oc.offender_score,
+      round(
+          0.8 * least(ic.days_inactive::numeric / 30, 1.0)
+          + 0.2 * oc.offender_score,
+      4) as score
+  from inactivity_calc ic
+  join offender_calc oc on oc.member = ic.member
+  order by score desc, ic.days_inactive desc;
+
 grant select on
   totals, v_identity, leaderboard_alltime, daily_counts, day_extremes,
   v_daily_series, v_day_of_week, v_hourly_matrix, v_monthly, v_weekly,
   v_leaderboard_active, v_biggest_day, v_highest_week, v_milestones,
   v_forecast, v_admin_deletes, v_participation,
-  v_member_stats
+  v_member_stats, v_last_active, v_offenders, v_lowest_drinker, v_worst_offenders
   to anon, authenticated;
 
 -- v_members removed: the All Members table it fed was dropped from the dashboard.

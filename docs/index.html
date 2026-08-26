@@ -70,6 +70,7 @@
       <button data-tab="leaderboards">Leaderboards</button>
       <button data-tab="trends">Road to Glory</button>
       <button data-tab="patterns">Unemployment Radar</button>
+      <button data-tab="admin">Hall of Shame</button>
     </nav>
 
     <!-- OVERVIEW -->
@@ -128,7 +129,25 @@
     </div>
 
     <div class="foot" id="foot"></div>
+
+    <!-- ADMIN -->
+    <div class="tab" id="admin">
+      <div class="cards" id="activity"></div>
+      <section class="box">
+        <h2>Worst performers</h2>
+        <table><tbody id="shame-board"></tbody></table>
+        <button class="more" id="toggle2" hidden>Show all</button>
+      </section>
+      <div class="grid2">
+        <section class="box"><h2>Least active members</h2><table><tbody id="board-least-active"></tbody></table></section>
+        <section class="box"><h2>Lowest total drinkers</h2><table><tbody id="board-lowest-total"></tbody></table></section>
+        <section class="box"><h2>Deletes per Beer</h2><table><tbody id="board-deletes-per-beer"></tbody></table></section>
+        <section class="box"><h2>Total Deletes</h2><table><tbody id="board-total-deletes"></tbody></table></section>
+      </div>
+      
+    </div>
   </div>
+  
 
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
   <script src="config.js"></script>
