@@ -392,8 +392,42 @@ async function loadForecast() {
   if (!milestones.length) $("milestones").innerHTML = `<tbody><tr><td style="color:var(--muted)">No milestones reached yet.</td></tr></tbody>`;
 }
 
+async function loadAdmin() {
+  const [shame_board, least_active, lowest_drinker, offenders] = await Promise.all([
+    view("v_worst_offenders"),
+    view("v_last_active"),
+    view("v_lowest_drinker"),
+    view("v_offenders"),
+  ]);
+
+  let expanded = false;
+  const drawBoard = () => {
+    const rows = (expanded ? shame_board : shame_board.slice(0, 10)).map((r, i) => [{ v: i + 1, cls: "rank" }, esc(r.member), { v: fmt(r.days_inactive), cls: "num" }, { v: fmt(r.offender_score), cls: "num" }, { v: r.score.toFixed(3), cls: "beers" }]);
+    table("shame-board", [
+      { label: "#", num: true }, { label: "Member" }, { label: "Days inactive", num: true }, { label: "Deletes per Beer", num: true }, { label: "Score", num: true }], rows);
+  };
+drawBoard();
+  const btn = $("toggle2");
+  if (shame_board.length > 10) {
+    btn.hidden = false;
+    btn.onclick = () => { expanded = !expanded; btn.textContent = expanded ? "Show top 30" : "Show all"; drawBoard(); };
+  } else btn.hidden = true;
+
+  table("board-least-active", [{ label: "Member" }, { label: "Last Active", num: true }],
+    least_active.slice(0, 10).map((r) => [esc(r.member), { v: fmtDate(r.last_active), cls: "num" }]));
+
+  table("board-lowest-total", [{ label: "Member" }, { label: "Beers", num: true }],
+    lowest_drinker.slice(0, 10).map((r) => [esc(r.member), { v: fmt(r.total_beers), cls: "beers" }]));
+
+  table("board-deletes-per-beer", [{ label: "Member" }, { label: "Beers Posted", num: true }, { label: "Deletes per Beer", num: true }],
+    offenders.slice(0, 10).map((r) => [esc(r.poster), { v: fmt(r.posted), cls: "num" }, { v: fmt(r.deletes_per_beer), cls: "beers" }]));
+
+  table("board-total-deletes", [{ label: "Member" }, { label: "Beers Posted", num: true }, { label: "Beers Deleted", num: true }],
+    offenders.sort((a, b) => b.admin_deletes - a.admin_deletes).slice(0, 10).map((r) => [esc(r.poster), { v: fmt(r.posted), cls: "num" }, { v: fmt(r.admin_deletes), cls: "beers" }]));
+}
+
 // ---------- router (lazy: load a tab's data the first time it's shown) ----------
-const LOADERS = { overview: loadOverview, leaderboards: loadLeaderboards, trends: loadTrends, patterns: loadPatterns };
+const LOADERS = { overview: loadOverview, leaderboards: loadLeaderboards, trends: loadTrends, patterns: loadPatterns, admin: loadAdmin };
 const loaded = new Set();
 
 function show(name) {
