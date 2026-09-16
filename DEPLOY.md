@@ -23,6 +23,27 @@ Watch it reconnect:
 journalctl -u beer-bot -f            # expect: "egress: <ip>" then "connected"
 ```
 
+## Recovering from a WhatsApp logout
+
+If healthchecks.io alerts with a body like
+`WhatsApp disconnected: loggedOut (code 401) — Stream Errored (conflict)`,
+that's not a crash — WhatsApp itself killed the linked-device session (device
+limit hit, unlinked from the phone, or a genuine conflicting connection).
+`bot.js` deliberately does not auto-reconnect in this case (a dead session
+can't be resumed), so the service stays "active (running)" while doing
+nothing until it's re-linked.
+
+```bash
+ssh "$BEER_BOT_HOST"
+cd /home/deploy/beer-bot
+./scripts/relink-whatsapp.sh   # stops the service, archives the dead session,
+                                # restarts, and tails the log for the QR code
+```
+
+Scan the QR with the phone that owns the WhatsApp account (WhatsApp -> Linked
+Devices). If it immediately gets logged out again, check that phone's Linked
+Devices list isn't at the 4-device cap — remove an unused one first.
+
 ## Gotchas
 
 - **Egress guard.** An `ExecStartPre` check refuses to start unless outbound
