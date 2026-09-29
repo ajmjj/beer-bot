@@ -121,8 +121,15 @@ async function start() {
   // First-run login: pairing code if PAIR_NUMBER is set, else QR.
   if (!sock.authState.creds.registered && PAIR_NUMBER) {
     setTimeout(async () => {
-      const code = await sock.requestPairingCode(PAIR_NUMBER);
-      console.log(`\nPairing code: ${code}\nWhatsApp -> Linked Devices -> Link with phone number\n`);
+      try {
+        const code = await sock.requestPairingCode(PAIR_NUMBER);
+        console.log(`\nPairing code: ${code}\nWhatsApp -> Linked Devices -> Link with phone number\n`);
+      } catch (err) {
+        // e.g. the socket already closed by the time this fires — an unhandled
+        // rejection here crashes the process and, under a tight restart loop,
+        // can burn through systemd's restart limit until it gives up entirely.
+        log.error({ err }, "pairing code request failed");
+      }
     }, 3000);
   }
 
