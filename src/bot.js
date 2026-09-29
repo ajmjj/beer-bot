@@ -43,6 +43,7 @@ const baileysLogger = log.child({ module: "baileys" }, { level: process.env.BAIL
 // No-op if HEALTHCHECK_URL is unset, so local dev is unaffected.
 const HEALTHCHECK_URL = process.env.HEALTHCHECK_URL || null;
 let heartbeat = null;
+let reconnectDelay = 0; // backoff so a refused server (e.g. 405) can't be hammered into an IP block
 // ponytail: fire-and-forget — a failed ping must never crash or block the bot.
 // A body (POSTed) shows up as "Last Ping Body" in the healthchecks.io alert.
 const hcPing = (path = "", body) =>
@@ -120,8 +121,15 @@ async function start() {
   // First-run login: pairing code if PAIR_NUMBER is set, else QR.
   if (!sock.authState.creds.registered && PAIR_NUMBER) {
     setTimeout(async () => {
-      const code = await sock.requestPairingCode(PAIR_NUMBER);
-      console.log(`\nPairing code: ${code}\nWhatsApp -> Linked Devices -> Link with phone number\n`);
+      try {
+        const code = await sock.requestPairingCode(PAIR_NUMBER);
+        console.log(`\nPairing code: ${code}\nWhatsApp -> Linked Devices -> Link with phone number\n`);
+      } catch (err) {
+        // e.g. the socket already closed by the time this fires — an unhandled
+        // rejection here crashes the process and, under a tight restart loop,
+        // can burn through systemd's restart limit until it gives up entirely.
+        log.error({ err }, "pairing code request failed");
+      }
     }, 3000);
   }
 
@@ -224,6 +232,7 @@ async function start() {
       hcPing(); // check in now, then keep checking in while the socket stays open
       clearInterval(heartbeat);
       heartbeat = setInterval(hcPing, 60_000);
+      reconnectDelay = 0; // healthy connection — reset backoff
       log.info({ group: GROUP_JID }, GROUP_JID ? "connected" : "connected — no GROUP_JID set, logging group JIDs");
       reconcileMembers(sock); // catches joins/leaves that happened while offline
       if (GROUP_JID) {
@@ -258,8 +267,9 @@ async function start() {
       if (code === DisconnectReason.loggedOut) {
         log.error("logged out — delete .baileys_auth and re-link");
       } else {
-        log.info({ code }, "connection closed, reconnecting");
-        start();
+        reconnectDelay = Math.min(reconnectDelay ? reconnectDelay * 2 : 2_000, 60_000);
+        log.info({ code, delayMs: reconnectDelay }, "connection closed, reconnecting");
+        setTimeout(start, reconnectDelay);
       }
     }
   });
