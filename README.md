@@ -70,6 +70,9 @@ PAIR_NUMBER=491701234567            # optional: pairing-code login instead of QR
 LOG_LEVEL=warn                      # optional: bot's own log level (default info)
 BAILEYS_LOG_LEVEL=warn              # optional: Baileys library's own log level (default warn)
 LOG_EVENTS=1                        # optional: dump every incoming Baileys event (implies debug)
+TELEGRAM_BOT_TOKEN=<from @BotFather>  # optional: remote re-pair, see below
+TELEGRAM_CHAT_ID=<your Telegram user id>
+HEALTHCHECK_URL=<healthchecks.io check URL>  # optional: dead-man's-switch heartbeat
 ```
 
 Run [schema.sql](schema.sql) against your Supabase project (see the header in
@@ -90,6 +93,16 @@ node scripts/insert-beer.js <n> <member> <iso_ts> [participant]  # manually inse
 First run, the bot prints a QR code (or a pairing code if `PAIR_NUMBER` is set) —
 link it under WhatsApp → Linked Devices. If `GROUP_JID` is unset, it logs the
 groups it sees; copy the right `…@g.us` JID into `.env` and restart.
+
+**Remote re-pair via Telegram** (optional, needs `PAIR_NUMBER` +
+`TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID`): if WhatsApp logs the device out,
+the bot DMs the Telegram chat automatically and waits for you to reply
+`/repair` — it then wipes the stale session and restarts into a fresh pairing
+flow, texting back a new pairing code to enter under WhatsApp → Linked Devices
+→ Link with phone number. No SSH access needed to recover. Create the bot via
+[@BotFather](https://t.me/BotFather) for the token; get your chat id by
+messaging the new bot once and checking
+`https://api.telegram.org/bot<token>/getUpdates`.
 
 **Logging**: `LOG_LEVEL` sets the bot's own verbosity (`info` by default).
 At `info` you get business outcomes (beer recorded/deleted/edited, members

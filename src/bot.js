@@ -12,6 +12,8 @@ import { parseBeer } from "./parser.js";
 import { guardDecision } from "./guard.js";
 import { decryptEdit } from "./edit-crypto.js";
 import { acquireSessionLock } from "./session-lock.js";
+import { notifyTelegram, listenForRepair } from "./telegram.js";
+import { rm } from "node:fs/promises";
 import { insertBeers, markBeerDeleted, getMemberName, handleBeerEdit, getLastBeers, getMaxBeerNumber, syncMembers, touchMember, updatePushNameByAnyId, updateMemberPhone } from "./store.js";
 
 const REVOKE = proto.Message.ProtocolMessage.Type.REVOKE;
@@ -124,11 +126,13 @@ async function start() {
       try {
         const code = await sock.requestPairingCode(PAIR_NUMBER);
         console.log(`\nPairing code: ${code}\nWhatsApp -> Linked Devices -> Link with phone number\n`);
+        notifyTelegram(`🔗 beer-bot pairing code: ${code}\nWhatsApp -> Linked Devices -> Link with phone number`);
       } catch (err) {
         // e.g. the socket already closed by the time this fires — an unhandled
         // rejection here crashes the process and, under a tight restart loop,
         // can burn through systemd's restart limit until it gives up entirely.
         log.error({ err }, "pairing code request failed");
+        notifyTelegram("⚠️ beer-bot: pairing code request failed — check journalctl.");
       }
     }, 3000);
   }
@@ -266,6 +270,7 @@ async function start() {
         (lastDisconnect?.error?.message ? ` — ${lastDisconnect.error.message}` : ""));
       if (code === DisconnectReason.loggedOut) {
         log.error("logged out — delete .baileys_auth and re-link");
+        notifyTelegram("⚠️ beer-bot: WhatsApp logged out. Reply /repair to relink from your phone.");
       } else {
         reconnectDelay = Math.min(reconnectDelay ? reconnectDelay * 2 : 2_000, 60_000);
         log.info({ code, delayMs: reconnectDelay }, "connection closed, reconnecting");
@@ -496,3 +501,13 @@ async function handleDeletion(sock, msg) {
 
 acquireSessionLock(); // refuse to start if another process holds the WhatsApp session
 start();
+
+// Remote re-pair via Telegram: wipes the (already-invalid) session and exits, so
+// systemd's restart lands in a fresh pairing flow that texts back a new code —
+// recovers from a WhatsApp logout from a phone, no SSH/laptop required.
+listenForRepair(async () => {
+  log.warn("manual re-pair requested via telegram");
+  await notifyTelegram("🔁 Re-pairing beer-bot — deleting session and restarting...");
+  await rm(".baileys_auth", { recursive: true, force: true }).catch(() => {});
+  process.exit(0);
+});
