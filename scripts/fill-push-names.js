@@ -1,7 +1,9 @@
 // Backfill push_name (and the masked member name) for beers that were posted
 // without a WhatsApp display name, using a push_name already known for the same
-// participant on another beer. Beers whose participant has no push_name anywhere
-// are written to missing-push-names.md for manual follow-up.
+// participant — either from another beer, or from the members table (names
+// learned via contacts.update/phoneNumberShare never land on a beer row
+// directly). Beers whose participant has no name anywhere are written to
+// missing-push-names.md for manual follow-up.
 //
 // Read-only by default; pass --apply to write. Idempotent.
 // Usage: node scripts/fill-push-names.js [--apply]
@@ -42,11 +44,21 @@ for (const [p, names] of Object.entries(counts)) {
   pushFor[p] = Object.entries(names).sort((a, b) => b[1] - a[1])[0][0];
 }
 
+// Second source: the members table, kept current by contacts.update/phoneNumberShare/
+// live messages — catches names that reached members but never got attached to a beer.
+const { data: members, error: memErr } = await supabase.from("members").select("participant, member, push_name");
+if (memErr) { console.error(memErr.message); process.exit(1); }
+const memberNameFor = {};
+for (const m of members) {
+  const name = m.push_name || (m.member !== maskPhone(m.participant) ? m.member : null);
+  if (name) memberNameFor[m.participant] = name;
+}
+
 const nullPush = rows.filter((r) => r.push_name == null);
 const fixable = [];
 const missing = [];
 for (const r of nullPush) {
-  const name = r.participant ? pushFor[r.participant] : undefined;
+  const name = r.participant ? (pushFor[r.participant] || memberNameFor[r.participant]) : undefined;
   if (name) fixable.push({ ...r, name });
   else missing.push(r);
 }
