@@ -26,22 +26,17 @@ function maskPhone(m) {
 
 const rows = [];
 for (let from = 0; ; from += 1000) {
-  const { data, error } = await supabase.from("beers").select("beer_number, member, push_name, participant").order("beer_number", { ascending: true }).range(from, from + 999);
+  const { data, error } = await supabase.from("beers").select("beer_number, member, push_name, participant, ts").order("beer_number", { ascending: true }).range(from, from + 999);
   if (error) { console.error(error.message); process.exit(1); }
   rows.push(...data);
   if (data.length < 1000) break;
 }
 
-// participant -> chosen push_name (most frequent; ties broken by first seen).
-const counts = {};
-for (const r of rows) {
-  if (!r.participant || !r.push_name) continue;
-  (counts[r.participant] ||= {});
-  counts[r.participant][r.push_name] = (counts[r.participant][r.push_name] || 0) + 1;
-}
+// participant -> most recent known push_name, by ts (not beer_number — gap-fills
+// and catch-up inserts can land out of numeric order).
 const pushFor = {};
-for (const [p, names] of Object.entries(counts)) {
-  pushFor[p] = Object.entries(names).sort((a, b) => b[1] - a[1])[0][0];
+for (const r of [...rows].sort((a, b) => new Date(a.ts) - new Date(b.ts))) {
+  if (r.participant && r.push_name) pushFor[r.participant] = r.push_name;
 }
 
 // Second source: the members table, kept current by contacts.update/phoneNumberShare/
