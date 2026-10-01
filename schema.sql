@@ -388,23 +388,66 @@ create or replace view v_member_stats as
 
 -- worst offenders
 create or replace view v_worst_offenders as
- with base_members as (
-    select distinct member from v_identity
+   with base_members as (
+      select distinct
+        vi.member,
+        m.participant
+      from v_identity vi
+      join members m
+          on m.participant = vi.pid
+      where m.left_at is null
+  ),
+  inactivity_calc as (
+      select
+          bm.member,
+          bm.participant,
+          la.last_active,
+          case
+              when la.last_active is null then 30   
+              else extract(day from (now() - la.last_active))::int
+          end as days_inactive
+      from base_members bm
+      left join (                            
+          select member, max(last_active) as last_active
+          from v_last_active group by member
+      ) la on la.member = bm.member
+  ),
+  offender_calc as (
+      select
+          bm.member,
+          bm.participant,
+          coalesce(ld.total_beers, 0) as total_beers,
+          coalesce(o.admin_deletes, 0) as admin_deletes,
+          round(
+              least(
+                  (coalesce(o.admin_deletes, 0) + 1)::numeric
+                  / (coalesce(ld.total_beers, 0) + 1),
+                  1.0
+              ),
+          4) as offender_score
+      from base_members bm
+      left join (                            
+          select member, max(total_beers) as total_beers
+          from v_lowest_drinker group by member
+      ) ld on ld.member = bm.member
+      left join v_offenders      o  on o.poster  = bm.member
   )
   select
-      bm.member,
-      coalesce(ld.total_beers, 0) as total_beers,
-      coalesce(o.admin_deletes, 0) as admin_deletes,
-      coalesce(o.deletes_per_beer, 0) as deletes_per_beer,
+      ic.member,
+      ic.participant,
+      ic.last_active,
+      ic.days_inactive,
+      oc.total_beers,
+      oc.admin_deletes,
+      round(least(ic.days_inactive::numeric / 30, 1.0), 4) as inactivity_score,
+      oc.offender_score,
       round(
-          (coalesce(o.admin_deletes, 0) + 1)::numeric
-          / (coalesce(ld.total_beers, 0) + 1),
-          4
-      ) as score
-  from base_members bm
-  left join v_lowest_drinker ld on ld.member = bm.member
-  left join v_offenders      o  on o.poster  = bm.member
-  order by score desc, total_beers asc;
+          0.9 * least(ic.days_inactive::numeric / 30, 1.0)
+          + 0.1 * oc.offender_score,
+      4) as score
+  from inactivity_calc ic
+  join offender_calc oc on oc.participant = ic.participant
+  order by score desc, ic.days_inactive desc;
 
 -- last active day
 create or replace view v_last_active as
@@ -425,51 +468,22 @@ create or replace view v_lowest_drinker as
 
 -- biggest offenders
 create or replace view v_offenders as
-  with base_members as (
-      select distinct member from v_identity
-  ),
-  inactivity_calc as (
-      select
-          bm.member,
-          la.last_active,
-          case
-              when la.last_active is null then 30   -- never posted = fully inactive (cap)
-              else extract(day from (now() - la.last_active))::int
-          end as days_inactive
-      from base_members bm
-      left join v_last_active la on la.member = bm.member
-  ),
-  offender_calc as (
-      select
-          bm.member,
-          coalesce(ld.total_beers, 0) as total_beers,
-          coalesce(o.admin_deletes, 0) as admin_deletes,
-          round(
-              least(
-                  (coalesce(o.admin_deletes, 0) + 1)::numeric
-                  / (coalesce(ld.total_beers, 0) + 1),
-                  1.0
-              ),
-          4) as offender_score
-      from base_members bm
-      left join v_lowest_drinker ld on ld.member = bm.member
-      left join v_offenders      o  on o.poster  = bm.member
-  )
-  select
-      ic.member,
-      ic.last_active,
-      ic.days_inactive,
-      oc.total_beers,
-      oc.admin_deletes,
-      round(least(ic.days_inactive::numeric / 30, 1.0), 4) as inactivity_score,
-      oc.offender_score,
-      round(
-          0.8 * least(ic.days_inactive::numeric / 30, 1.0)
-          + 0.2 * oc.offender_score,
-      4) as score
-  from inactivity_calc ic
-  join offender_calc oc on oc.member = ic.member
-  order by score desc, ic.days_inactive desc;
+  select d.poster,
+         count(*) filter (where d.by_admin)::int as admin_deletes,
+         p.posted,
+         round(
+           count(*) filter (where d.by_admin)::numeric / nullif(p.posted, 0),
+           2
+         ) as deletes_per_beer
+  from deleted_beers d
+  join (
+    select member, count(*)::int as posted
+    from beers
+    group by member
+  ) p on p.member = d.poster
+  group by d.poster, p.posted
+  having count(*) filter (where d.by_admin) > 0
+  order by deletes_per_beer desc;
 
 grant select on
   totals, v_identity, leaderboard_alltime, daily_counts, day_extremes,
